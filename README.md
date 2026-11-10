@@ -256,6 +256,32 @@ LibraryJs-main/
 
 ---
 
+## ☁️ Hosting on Vercel (Frontend Cloud Deployment)
+
+The frontend Single Page Application (SPA) is pre-configured with `vercel.json` for seamless deployment to [Vercel](https://vercel.com/):
+
+### 1. Import to Vercel
+1. Log in to [vercel.com](https://vercel.com/) with your GitHub account.
+2. Click **"Add New Project"** and import `kavinda9210/LibraryJs`.
+3. In the project setup screen:
+   - **Framework Preset:** `Create React App`
+   - **Root Directory:** Click "Edit" and select `frontend` (or keep root default since `vercel.json` handles both).
+   - **Build Command:** `npm run build`
+   - **Output Directory:** `build`
+
+### 2. Environment Variables
+Under **Environment Variables**, add:
+- **Key:** `REACT_APP_API_URL`
+- **Value:** URL of your running backend (e.g., `https://your-backend-service.onrender.com` or your local domain/tunnel).
+
+### 3. Click "Deploy"
+Vercel will build and assign you a global HTTPS domain (e.g., `https://library-js.vercel.app`) with automatic client-side routing rewrites.
+
+> [!NOTE]
+> The backend relies on SQLite and local file systems for automated backups and scheduled tasks. Run the backend 24/7 on your local office Windows server using PM2 (`scripts\start_pm2.bat`) or host it on a persistent cloud container (e.g. Render, Railway, or VPS).
+
+---
+
 ## 🛠️ Troubleshooting & FAQ
 
 #### Q: Port 5000 is already in use?

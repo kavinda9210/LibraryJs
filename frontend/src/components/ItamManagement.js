@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import axios from "axios";
+import apiClient from "../api/client";
 import { useNavigate } from "react-router-dom";
 
 /**
@@ -26,7 +26,7 @@ function ItamManagement() {
   const fetchItams = async () => {
     try {
       setLoading(true);
-      const response = await axios.get("http://localhost:5000/itam/");
+      const response = await apiClient.get("/itam/");
       setItams(response.data);
       setError(null);
     } catch (err) {
@@ -45,7 +45,7 @@ function ItamManagement() {
   // Show item details in modal
   const handleShowDetails = async (itamId) => {
     try {
-      const response = await axios.get(`http://localhost:5000/itam/${itamId}`);
+      const response = await apiClient.get(`/itam/${itamId}`);
       setSelectedItam(response.data);
       setShowModal(true);
     } catch (err) {
@@ -64,7 +64,7 @@ function ItamManagement() {
   const handleDelete = async (id) => {
     if (window.confirm("Are you sure you want to delete this item?")) {
       try {
-        await axios.delete(`http://localhost:5000/itam/${id}`);
+        await apiClient.delete(`/itam/${id}`);
         fetchItams(); // refresh list after delete
       } catch (err) {
         console.error("Failed to delete item:", err);
