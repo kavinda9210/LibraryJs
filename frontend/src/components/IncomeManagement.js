@@ -1,28 +1,26 @@
 import React, { useState, useEffect } from "react";
-import axios from "axios";
+import apiClient from "../api/client";
 import { useNavigate } from "react-router-dom";
+import {
+  FiDollarSign,
+  FiPlus,
+  FiArrowLeft,
+  FiSearch,
+  FiFilter,
+  FiX,
+  FiEye,
+  FiTrash2,
+  FiFileText,
+  FiCalendar,
+  FiTag,
+  FiPackage,
+  FiLayers,
+  FiCheckCircle,
+  FiXCircle,
+  FiClock,
+} from "react-icons/fi";
+import "bootstrap/dist/css/bootstrap.min.css";
 
-/**
- * IncomeManagement page (User side)
- * Opened from: Dashboard.js -> "Income Management" button
- * Features:
- * - View all income records
- * - Advanced search/filter
- * - Generate PDF report for filtered records
- * - View income record details (modal)
- * - Add income record
- * - Delete income record
- * - Back button returns to User Dashboard (/dashboard)
- *
- * Backend endpoints expected:
- * GET    http://localhost:5000/income/
- * GET    http://localhost:5000/income/:record_id
- * DELETE http://localhost:5000/income/:record_id
- * POST   http://localhost:5000/income/generate-pdf (for filtered report)
- *
- * Add Income page route expected:
- * /add-income
- */
 function IncomeManagement() {
   const [incomes, setIncomes] = useState([]);
   const [filteredIncomes, setFilteredIncomes] = useState([]);
@@ -31,6 +29,7 @@ function IncomeManagement() {
   const [selectedIncome, setSelectedIncome] = useState(null);
   const [showModal, setShowModal] = useState(false);
   const [showFilterPanel, setShowFilterPanel] = useState(false);
+  const [searchTerm, setSearchTerm] = useState("");
 
   // Filter states
   const [filters, setFilters] = useState({
@@ -52,7 +51,7 @@ function IncomeManagement() {
   const fetchIncomes = async () => {
     try {
       setLoading(true);
-      const response = await axios.get("http://localhost:5000/income/");
+      const response = await apiClient.get("/income");
       setIncomes(response.data);
       setFilteredIncomes(response.data);
       setError(null);
@@ -64,7 +63,6 @@ function IncomeManagement() {
     }
   };
 
-  // Load records once
   useEffect(() => {
     fetchIncomes();
   }, []);
@@ -73,15 +71,12 @@ function IncomeManagement() {
   const applyFilters = () => {
     let filtered = [...incomes];
 
-    // Date range filter
     if (filters.dateFrom) {
       filtered = filtered.filter((inc) => inc.date >= filters.dateFrom);
     }
     if (filters.dateTo) {
       filtered = filtered.filter((inc) => inc.date <= filters.dateTo);
     }
-
-    // Text filters (case-insensitive partial match)
     if (filters.supplyCompany) {
       filtered = filtered.filter((inc) =>
         inc.supply_company.toLowerCase().includes(filters.supplyCompany.toLowerCase())
@@ -97,21 +92,15 @@ function IncomeManagement() {
         inc.itam_name.toLowerCase().includes(filters.itamName.toLowerCase())
       );
     }
-
-    // Approval status filter
     if (filters.approvalStatus) {
       filtered = filtered.filter((inc) => inc.approval_status === filters.approvalStatus);
     }
-
-    // Quantity range filter
     if (filters.minQty) {
       filtered = filtered.filter((inc) => inc.qty >= Number(filters.minQty));
     }
     if (filters.maxQty) {
       filtered = filtered.filter((inc) => inc.qty <= Number(filters.maxQty));
     }
-
-    // Price range filter
     if (filters.minPrice) {
       filtered = filtered.filter((inc) => inc.buy_price >= Number(filters.minPrice));
     }
@@ -120,6 +109,7 @@ function IncomeManagement() {
     }
 
     setFilteredIncomes(filtered);
+    setShowFilterPanel(false);
   };
 
   // Clear all filters
@@ -145,7 +135,25 @@ function IncomeManagement() {
     setFilters((prev) => ({ ...prev, [name]: value }));
   };
 
-  // Generate PDF for filtered records
+  // Quick search
+  const handleSearch = (value) => {
+    setSearchTerm(value);
+    if (!value.trim()) {
+      setFilteredIncomes(incomes);
+      return;
+    }
+
+    const searched = incomes.filter(
+      (inc) =>
+        inc.supply_company?.toLowerCase().includes(value.toLowerCase()) ||
+        inc.bill_number?.toLowerCase().includes(value.toLowerCase()) ||
+        inc.itam_name?.toLowerCase().includes(value.toLowerCase()) ||
+        inc.record_id?.toString().includes(value)
+    );
+    setFilteredIncomes(searched);
+  };
+
+  // Generate PDF
   const generatePDF = async () => {
     if (filteredIncomes.length === 0) {
       alert("No records to generate PDF");
@@ -153,13 +161,12 @@ function IncomeManagement() {
     }
 
     try {
-      const response = await axios.post(
-        "http://localhost:5000/income/generate-pdf",
+      const response = await apiClient.post(
+        "/income/generate-pdf",
         { records: filteredIncomes },
         { responseType: "blob" }
       );
 
-      // Create download link
       const url = window.URL.createObjectURL(new Blob([response.data]));
       const link = document.createElement("a");
       link.href = url;
@@ -175,10 +182,10 @@ function IncomeManagement() {
     }
   };
 
-  // Show record details
+  // Show details
   const handleShowDetails = async (recordId) => {
     try {
-      const response = await axios.get(`http://localhost:5000/income/${recordId}`);
+      const response = await apiClient.get(`/income/${recordId}`);
       setSelectedIncome(response.data);
       setShowModal(true);
     } catch (err) {
@@ -197,11 +204,11 @@ function IncomeManagement() {
   const handleDelete = async (recordId) => {
     if (window.confirm("Are you sure you want to delete this income record?")) {
       try {
-        await axios.delete(`http://localhost:5000/income/${recordId}`);
+        await apiClient.delete(`/income/${recordId}`);
         fetchIncomes();
       } catch (err) {
         console.error("Failed to delete income record:", err);
-        alert("Failed to delete income record");
+        alert(err.response?.data?.message || "Failed to delete income record");
       }
     }
   };
@@ -211,506 +218,1167 @@ function IncomeManagement() {
     navigate("/add-income");
   };
 
-  // Back to user dashboard
+  // Back to dashboard
   const goToDashboard = () => {
     navigate("/dashboard");
   };
 
-  if (loading) return <div style={styles.loading}>Loading income records...</div>;
-  if (error) return <div style={styles.error}>{error}</div>;
+  // Get approval badge
+  const getApprovalBadge = (status) => {
+    const badges = {
+      approved: { icon: <FiCheckCircle size={14} />, class: "badge-approved" },
+      rejected: { icon: <FiXCircle size={14} />, class: "badge-rejected" },
+      pending: { icon: <FiClock size={14} />, class: "badge-pending" },
+    };
+    return badges[status] || badges.pending;
+  };
 
-  return (
-    <div style={styles.container}>
-      <div style={styles.header}>
-        <h1>Income Management</h1>
-        <div style={styles.headerButtons}>
-          <button style={styles.filterButton} onClick={() => setShowFilterPanel(!showFilterPanel)}>
-            🔍 {showFilterPanel ? "Hide Filters" : "Show Filters"}
-          </button>
-          <button style={styles.pdfButton} onClick={generatePDF}>
-            📄 Generate PDF Report
-          </button>
-          <button style={styles.addButton} onClick={handleAddIncome}>
-            + Add Income
-          </button>
+  if (loading)
+    return (
+      <div className="loading-container">
+        <div className="spinner-border text-primary" role="status">
+          <span className="visually-hidden">Loading...</span>
+        </div>
+        <p className="loading-text mt-3">Loading income records...</p>
+      </div>
+    );
+
+  if (error)
+    return (
+      <div className="error-container">
+        <div className="alert alert-danger" role="alert">
+          {error}
         </div>
       </div>
+    );
 
-      <button style={styles.backButton} onClick={goToDashboard}>
-        ← Back to Dashboard
-      </button>
-
-      {/* Advanced Filter Panel */}
-      {showFilterPanel && (
-        <div style={styles.filterPanel}>
-          <h3 style={styles.filterTitle}>Advanced Filters</h3>
-
-          <div style={styles.filterGrid}>
-            {/* Date Range */}
-            <div style={styles.filterGroup}>
-              <label style={styles.filterLabel}>Date From:</label>
-              <input
-                style={styles.filterInput}
-                type="date"
-                name="dateFrom"
-                value={filters.dateFrom}
-                onChange={handleFilterChange}
-              />
+  return (
+    <div className="income-management">
+      {/* Top Navigation Bar */}
+      <nav className="top-nav shadow-sm">
+        <div className="container-fluid px-4">
+          <div className="row align-items-center py-3">
+            <div className="col-md-6">
+              <div className="d-flex align-items-center">
+                <div className="page-icon me-3">
+                  <FiDollarSign size={24} />
+                </div>
+                <div>
+                  <h5 className="mb-0 nav-title">Income Management</h5>
+                  <small className="nav-subtitle">
+                    Track and manage income records
+                  </small>
+                </div>
+              </div>
             </div>
-
-            <div style={styles.filterGroup}>
-              <label style={styles.filterLabel}>Date To:</label>
-              <input
-                style={styles.filterInput}
-                type="date"
-                name="dateTo"
-                value={filters.dateTo}
-                onChange={handleFilterChange}
-              />
+            <div className="col-md-6 text-md-end mt-3 mt-md-0">
+              <button className="btn btn-back me-2" onClick={goToDashboard}>
+                <FiArrowLeft size={18} className="me-2" />
+                Back to Dashboard
+              </button>
+              <button className="btn btn-add" onClick={handleAddIncome}>
+                <FiPlus size={18} className="me-2" />
+                Add Income
+              </button>
             </div>
-
-            {/* Supply Company */}
-            <div style={styles.filterGroup}>
-              <label style={styles.filterLabel}>Supply Company:</label>
-              <input
-                style={styles.filterInput}
-                type="text"
-                name="supplyCompany"
-                placeholder="Search company..."
-                value={filters.supplyCompany}
-                onChange={handleFilterChange}
-              />
-            </div>
-
-            {/* Bill Number */}
-            <div style={styles.filterGroup}>
-              <label style={styles.filterLabel}>Bill Number:</label>
-              <input
-                style={styles.filterInput}
-                type="text"
-                name="billNumber"
-                placeholder="Search bill..."
-                value={filters.billNumber}
-                onChange={handleFilterChange}
-              />
-            </div>
-
-            {/* Item Name */}
-            <div style={styles.filterGroup}>
-              <label style={styles.filterLabel}>Item Name:</label>
-              <input
-                style={styles.filterInput}
-                type="text"
-                name="itamName"
-                placeholder="Search item..."
-                value={filters.itamName}
-                onChange={handleFilterChange}
-              />
-            </div>
-
-            {/* Approval Status */}
-            <div style={styles.filterGroup}>
-              <label style={styles.filterLabel}>Approval Status:</label>
-              <select
-                style={styles.filterInput}
-                name="approvalStatus"
-                value={filters.approvalStatus}
-                onChange={handleFilterChange}
-              >
-                <option value="">All</option>
-                <option value="pending">Pending</option>
-                <option value="approved">Approved</option>
-                <option value="rejected">Rejected</option>
-              </select>
-            </div>
-
-            {/* Quantity Range */}
-            <div style={styles.filterGroup}>
-              <label style={styles.filterLabel}>Min Quantity:</label>
-              <input
-                style={styles.filterInput}
-                type="number"
-                name="minQty"
-                placeholder="Min qty"
-                value={filters.minQty}
-                onChange={handleFilterChange}
-              />
-            </div>
-
-            <div style={styles.filterGroup}>
-              <label style={styles.filterLabel}>Max Quantity:</label>
-              <input
-                style={styles.filterInput}
-                type="number"
-                name="maxQty"
-                placeholder="Max qty"
-                value={filters.maxQty}
-                onChange={handleFilterChange}
-              />
-            </div>
-
-            {/* Price Range */}
-            <div style={styles.filterGroup}>
-              <label style={styles.filterLabel}>Min Price:</label>
-              <input
-                style={styles.filterInput}
-                type="number"
-                step="0.01"
-                name="minPrice"
-                placeholder="Min price"
-                value={filters.minPrice}
-                onChange={handleFilterChange}
-              />
-            </div>
-
-            <div style={styles.filterGroup}>
-              <label style={styles.filterLabel}>Max Price:</label>
-              <input
-                style={styles.filterInput}
-                type="number"
-                step="0.01"
-                name="maxPrice"
-                placeholder="Max price"
-                value={filters.maxPrice}
-                onChange={handleFilterChange}
-              />
-            </div>
-          </div>
-
-          <div style={styles.filterActions}>
-            <button style={styles.applyFilterButton} onClick={applyFilters}>
-              Apply Filters
-            </button>
-            <button style={styles.clearFilterButton} onClick={clearFilters}>
-              Clear Filters
-            </button>
-            <span style={styles.resultCount}>
-              Showing {filteredIncomes.length} of {incomes.length} records
-            </span>
           </div>
         </div>
-      )}
+      </nav>
 
-      <div style={styles.tableContainer}>
-        <table style={styles.table}>
-          <thead>
-            <tr>
-              <th style={styles.th}>Record ID</th>
-              <th style={styles.th}>Date</th>
-              <th style={styles.th}>Supply Company</th>
-              <th style={styles.th}>Bill No</th>
-              <th style={styles.th}>Item</th>
-              <th style={styles.th}>Qty</th>
-              <th style={styles.th}>Buy Price</th>
-              <th style={styles.th}>Approval</th>
-              <th style={styles.th}>Actions</th>
-            </tr>
-          </thead>
+      <div className="container-fluid px-4 py-4">
+        {/* Action Bar */}
+        <div className="row mb-4">
+          <div className="col-12">
+            <div className="card action-card shadow-sm">
+              <div className="card-body p-3">
+                <div className="row align-items-center g-3">
+                  {/* Search */}
+                  <div className="col-md-4">
+                    <div className="input-group">
+                      <span className="input-group-text search-icon">
+                        <FiSearch size={20} />
+                      </span>
+                      <input
+                        type="text"
+                        className="form-control search-input"
+                        placeholder="Quick search..."
+                        value={searchTerm}
+                        onChange={(e) => handleSearch(e.target.value)}
+                      />
+                    </div>
+                  </div>
 
-          <tbody>
-            {filteredIncomes.length === 0 ? (
-              <tr>
-                <td colSpan="9" style={styles.noRows}>
-                  No income records found
-                </td>
-              </tr>
-            ) : (
-              filteredIncomes.map((inc) => (
-                <tr
-                  key={inc.record_id}
-                  style={styles.tr}
-                  onClick={() => handleShowDetails(inc.record_id)}
-                >
-                  <td style={styles.td}>{inc.record_id}</td>
-                  <td style={styles.td}>{inc.date}</td>
-                  <td style={styles.td}>{inc.supply_company}</td>
-                  <td style={styles.td}>{inc.bill_number}</td>
-                  <td style={styles.td}>{inc.itam_name}</td>
-                  <td style={styles.td}>{inc.qty}</td>
-                  <td style={styles.td}>{inc.buy_price}</td>
-                  <td style={styles.td}>
-                    <span style={getApprovalStyle(inc.approval_status)}>
-                      {inc.approval_status}
-                    </span>
-                  </td>
-
-                  <td style={styles.td} onClick={(e) => e.stopPropagation()}>
+                  {/* Action Buttons */}
+                  <div className="col-md-8 text-md-end">
                     <button
-                      style={{ ...styles.button, ...styles.deleteButton }}
-                      onClick={() => handleDelete(inc.record_id)}
+                      className="btn btn-filter me-2"
+                      onClick={() => setShowFilterPanel(!showFilterPanel)}
                     >
-                      Delete
+                      <FiFilter size={18} className="me-2" />
+                      {showFilterPanel ? "Hide" : "Show"} Filters
                     </button>
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
+                    <button className="btn btn-pdf" onClick={generatePDF}>
+                      <FiFileText size={18} className="me-2" />
+                      Generate PDF
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Advanced Filter Panel */}
+        {showFilterPanel && (
+          <div className="row mb-4">
+            <div className="col-12">
+              <div className="card filter-card shadow-lg">
+                <div className="card-body p-4">
+                  <div className="d-flex justify-content-between align-items-center mb-4">
+                    <h5 className="filter-title mb-0">
+                      <FiFilter className="me-2" />
+                      Advanced Filters
+                    </h5>
+                    <button
+                      className="btn-close-filter"
+                      onClick={() => setShowFilterPanel(false)}
+                    >
+                      <FiX size={20} />
+                    </button>
+                  </div>
+
+                  <div className="row g-3">
+                    {/* Date Range */}
+                    <div className="col-md-3">
+                      <label className="filter-label">
+                        <FiCalendar size={14} className="me-2" />
+                        Date From
+                      </label>
+                      <input
+                        className="form-control filter-input"
+                        type="date"
+                        name="dateFrom"
+                        value={filters.dateFrom}
+                        onChange={handleFilterChange}
+                      />
+                    </div>
+
+                    <div className="col-md-3">
+                      <label className="filter-label">
+                        <FiCalendar size={14} className="me-2" />
+                        Date To
+                      </label>
+                      <input
+                        className="form-control filter-input"
+                        type="date"
+                        name="dateTo"
+                        value={filters.dateTo}
+                        onChange={handleFilterChange}
+                      />
+                    </div>
+
+                    {/* Supply Company */}
+                    <div className="col-md-3">
+                      <label className="filter-label">
+                        <FiTag size={14} className="me-2" />
+                        Supply Company
+                      </label>
+                      <input
+                        className="form-control filter-input"
+                        type="text"
+                        name="supplyCompany"
+                        placeholder="Company name..."
+                        value={filters.supplyCompany}
+                        onChange={handleFilterChange}
+                      />
+                    </div>
+
+                    {/* Bill Number */}
+                    <div className="col-md-3">
+                      <label className="filter-label">
+                        <FiFileText size={14} className="me-2" />
+                        Bill Number
+                      </label>
+                      <input
+                        className="form-control filter-input"
+                        type="text"
+                        name="billNumber"
+                        placeholder="Bill number..."
+                        value={filters.billNumber}
+                        onChange={handleFilterChange}
+                      />
+                    </div>
+
+                    {/* Item Name */}
+                    <div className="col-md-3">
+                      <label className="filter-label">
+                        <FiPackage size={14} className="me-2" />
+                        Item Name
+                      </label>
+                      <input
+                        className="form-control filter-input"
+                        type="text"
+                        name="itamName"
+                        placeholder="Item name..."
+                        value={filters.itamName}
+                        onChange={handleFilterChange}
+                      />
+                    </div>
+
+                    {/* Approval Status */}
+                    <div className="col-md-3">
+                      <label className="filter-label">
+                        <FiCheckCircle size={14} className="me-2" />
+                        Approval Status
+                      </label>
+                      <select
+                        className="form-select filter-input"
+                        name="approvalStatus"
+                        value={filters.approvalStatus}
+                        onChange={handleFilterChange}
+                      >
+                        <option value="">All</option>
+                        <option value="pending">Pending</option>
+                        <option value="approved">Approved</option>
+                        <option value="rejected">Rejected</option>
+                      </select>
+                    </div>
+
+                    {/* Quantity Range */}
+                    <div className="col-md-3">
+                      <label className="filter-label">
+                        <FiLayers size={14} className="me-2" />
+                        Min Quantity
+                      </label>
+                      <input
+                        className="form-control filter-input"
+                        type="number"
+                        name="minQty"
+                        placeholder="0"
+                        value={filters.minQty}
+                        onChange={handleFilterChange}
+                      />
+                    </div>
+
+                    <div className="col-md-3">
+                      <label className="filter-label">
+                        <FiLayers size={14} className="me-2" />
+                        Max Quantity
+                      </label>
+                      <input
+                        className="form-control filter-input"
+                        type="number"
+                        name="maxQty"
+                        placeholder="999"
+                        value={filters.maxQty}
+                        onChange={handleFilterChange}
+                      />
+                    </div>
+
+                    {/* Price Range */}
+                    <div className="col-md-3">
+                      <label className="filter-label">
+                        <FiDollarSign size={14} className="me-2" />
+                        Min Price (Rs.)
+                      </label>
+                      <input
+                        className="form-control filter-input"
+                        type="number"
+                        step="0.01"
+                        name="minPrice"
+                        placeholder="0.00"
+                        value={filters.minPrice}
+                        onChange={handleFilterChange}
+                      />
+                    </div>
+
+                    <div className="col-md-3">
+                      <label className="filter-label">
+                        <FiDollarSign size={14} className="me-2" />
+                        Max Price (Rs.)
+                      </label>
+                      <input
+                        className="form-control filter-input"
+                        type="number"
+                        step="0.01"
+                        name="maxPrice"
+                        placeholder="9999.99"
+                        value={filters.maxPrice}
+                        onChange={handleFilterChange}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="filter-actions mt-4">
+                    <button className="btn btn-apply" onClick={applyFilters}>
+                      <FiCheckCircle size={18} className="me-2" />
+                      Apply Filters
+                    </button>
+                    <button className="btn btn-clear me-3" onClick={clearFilters}>
+                      <FiX size={18} className="me-2" />
+                      Clear All
+                    </button>
+                    <span className="result-count">
+                      Showing {filteredIncomes.length} of {incomes.length} records
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Income Table */}
+        <div className="row">
+          <div className="col-12">
+            <div className="card table-card shadow-lg">
+              <div className="card-body p-0">
+                <div className="table-responsive">
+                  <table className="table income-table mb-0">
+                    <thead>
+                      <tr>
+                        <th>ID</th>
+                        <th>Date</th>
+                        <th>Supply Company</th>
+                        <th>Bill No</th>
+                        <th>Item</th>
+                        <th>Qty</th>
+                        <th>Buy Price</th>
+                        <th>Status</th>
+                        <th className="text-center">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredIncomes.length === 0 ? (
+                        <tr>
+                          <td colSpan="9" className="text-center py-5">
+                            <div className="no-records">
+                              {searchTerm || Object.values(filters).some(v => v) ? (
+                                <>
+                                  <FiSearch size={48} className="mb-3" />
+                                  <p className="mb-0">No records found matching your criteria</p>
+                                </>
+                              ) : (
+                                <>
+                                  <FiDollarSign size={48} className="mb-3" />
+                                  <p className="mb-0">No income records found</p>
+                                </>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      ) : (
+                        filteredIncomes.map((inc) => {
+                          const badge = getApprovalBadge(inc.approval_status);
+                          return (
+                            <tr key={inc.record_id} className="income-row">
+                              <td>
+                                <span className="id-badge">{inc.record_id}</span>
+                              </td>
+                              <td>
+                                <div className="d-flex align-items-center">
+                                  <FiCalendar size={14} className="me-2 text-muted" />
+                                  {inc.date}
+                                </div>
+                              </td>
+                              <td className="fw-semibold">{inc.supply_company}</td>
+                              <td>
+                                <div className="d-flex align-items-center">
+                                  <FiFileText size={14} className="me-2 text-muted" />
+                                  {inc.bill_number}
+                                </div>
+                              </td>
+                              <td>
+                                <div className="d-flex align-items-center">
+                                  <FiPackage size={14} className="me-2 text-muted" />
+                                  {inc.itam_name}
+                                </div>
+                              </td>
+                              <td>
+                                <span className="qty-badge">{inc.qty}</span>
+                              </td>
+                              <td>
+                                <span className="price-badge">
+                                  Rs. {parseFloat(inc.buy_price).toFixed(2)}
+                                </span>
+                              </td>
+                              <td>
+                                <span className={`status-badge ${badge.class}`}>
+                                  {badge.icon}
+                                  <span className="ms-1">{inc.approval_status}</span>
+                                </span>
+                              </td>
+                              <td className="text-center">
+                                <button
+                                  className="btn btn-action btn-view me-2"
+                                  onClick={() => handleShowDetails(inc.record_id)}
+                                  title="View Details"
+                                >
+                                  <FiEye size={16} />
+                                </button>
+                                <button
+                                  className="btn btn-action btn-delete"
+                                  onClick={() => handleDelete(inc.record_id)}
+                                  title="Delete"
+                                >
+                                  <FiTrash2 size={16} />
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              <div className="card-footer">
+                <small className="text-muted">
+                  Showing {filteredIncomes.length} of {incomes.length} income records
+                </small>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* Details Modal */}
       {showModal && selectedIncome && (
-        <div style={styles.modalOverlay} onClick={handleCloseModal}>
-          <div style={styles.modalContent} onClick={(e) => e.stopPropagation()}>
-            <div style={styles.modalHeader}>
-              <h2 style={styles.modalTitle}>Income Details</h2>
-              <button style={styles.closeButton} onClick={handleCloseModal}>
-                ×
+        <div className="modal-overlay" onClick={handleCloseModal}>
+          <div className="modal-container" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header-custom">
+              <div className="d-flex align-items-center">
+                <div className="modal-icon me-3">
+                  <FiDollarSign size={28} />
+                </div>
+                <div>
+                  <h4 className="modal-title mb-1">Income Record Details</h4>
+                  <p className="modal-subtitle mb-0">
+                    Record ID: {selectedIncome.record_id}
+                  </p>
+                </div>
+              </div>
+              <button className="btn-close-modal" onClick={handleCloseModal}>
+                <FiX size={24} />
               </button>
             </div>
 
-            <div style={styles.modalBody}>
-              <div style={styles.detailRow}>
-                <span style={styles.detailLabel}>Record ID:</span>
-                <span style={styles.detailValue}>{selectedIncome.record_id}</span>
+            <div className="modal-body-custom">
+              <div className="detail-item">
+                <div className="detail-icon">
+                  <FiCalendar size={18} />
+                </div>
+                <div className="detail-content">
+                  <span className="detail-label">Date</span>
+                  <span className="detail-value">{selectedIncome.date}</span>
+                </div>
               </div>
 
-              <div style={styles.detailRow}>
-                <span style={styles.detailLabel}>Date:</span>
-                <span style={styles.detailValue}>{selectedIncome.date}</span>
+              <div className="detail-item">
+                <div className="detail-icon">
+                  <FiTag size={18} />
+                </div>
+                <div className="detail-content">
+                  <span className="detail-label">Supply Company</span>
+                  <span className="detail-value">{selectedIncome.supply_company}</span>
+                </div>
               </div>
 
-              <div style={styles.detailRow}>
-                <span style={styles.detailLabel}>Supply Company:</span>
-                <span style={styles.detailValue}>{selectedIncome.supply_company}</span>
+              <div className="detail-item">
+                <div className="detail-icon">
+                  <FiFileText size={18} />
+                </div>
+                <div className="detail-content">
+                  <span className="detail-label">Bill Number</span>
+                  <span className="detail-value">{selectedIncome.bill_number}</span>
+                </div>
               </div>
 
-              <div style={styles.detailRow}>
-                <span style={styles.detailLabel}>Bill Number:</span>
-                <span style={styles.detailValue}>{selectedIncome.bill_number}</span>
+              <div className="detail-item">
+                <div className="detail-icon">
+                  <FiPackage size={18} />
+                </div>
+                <div className="detail-content">
+                  <span className="detail-label">Item Name</span>
+                  <span className="detail-value">{selectedIncome.itam_name}</span>
+                </div>
               </div>
 
-              <div style={styles.detailRow}>
-                <span style={styles.detailLabel}>Item Name:</span>
-                <span style={styles.detailValue}>{selectedIncome.itam_name}</span>
+              <div className="detail-item">
+                <div className="detail-icon">
+                  <FiLayers size={18} />
+                </div>
+                <div className="detail-content">
+                  <span className="detail-label">Quantity</span>
+                  <span className="detail-value">{selectedIncome.qty}</span>
+                </div>
               </div>
 
-              <div style={styles.detailRow}>
-                <span style={styles.detailLabel}>Qty:</span>
-                <span style={styles.detailValue}>{selectedIncome.qty}</span>
+              <div className="detail-item">
+                <div className="detail-icon">
+                  <FiDollarSign size={18} />
+                </div>
+                <div className="detail-content">
+                  <span className="detail-label">Buy Price</span>
+                  <span className="detail-value">
+                    Rs. {parseFloat(selectedIncome.buy_price).toFixed(2)}
+                  </span>
+                </div>
               </div>
 
-              <div style={styles.detailRow}>
-                <span style={styles.detailLabel}>Buy Price:</span>
-                <span style={styles.detailValue}>{selectedIncome.buy_price}</span>
-              </div>
-
-              <div style={styles.detailRow}>
-                <span style={styles.detailLabel}>Approval:</span>
-                <span style={styles.detailValue}>{selectedIncome.approval_status}</span>
+              <div className="detail-item">
+                <div className="detail-icon">
+                  {selectedIncome.approval_status === 'approved' && <FiCheckCircle size={18} />}
+                  {selectedIncome.approval_status === 'rejected' && <FiXCircle size={18} />}
+                  {selectedIncome.approval_status === 'pending' && <FiClock size={18} />}
+                </div>
+                <div className="detail-content">
+                  <span className="detail-label">Approval Status</span>
+                  <span className="detail-value text-capitalize">{selectedIncome.approval_status}</span>
+                </div>
               </div>
             </div>
 
-            <div style={styles.modalFooter}>
-              <button style={styles.modalCloseBtn} onClick={handleCloseModal}>
+            <div className="modal-footer-custom">
+              <button className="btn btn-modal-close" onClick={handleCloseModal}>
                 Close
               </button>
             </div>
           </div>
         </div>
       )}
+
+      <style>{`
+        .income-management {
+          min-height: 100vh;
+          background: linear-gradient(135deg, #E3F2FD 0%, #BBDEFB 100%);
+          font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+        }
+
+        /* Loading & Error */
+        .loading-container,
+        .error-container {
+          display: flex;
+          justify-content: center;
+          align-items: center;
+          min-height: 100vh;
+          flex-direction: column;
+        }
+
+        .loading-text {
+          color: #1565C0;
+          font-weight: 600;
+          font-size: 1.1rem;
+        }
+
+        .spinner-border {
+          color: #2196F3 !important;
+          width: 3rem;
+          height: 3rem;
+        }
+
+        /* Top Navigation */
+        .top-nav {
+          background: linear-gradient(135deg, #FFFFFF 0%, #E3F2FD 100%);
+          border-bottom: 3px solid #2196F3;
+        }
+
+        .page-icon {
+          width: 50px;
+          height: 50px;
+          background: linear-gradient(135deg, #2196F3 0%, #1976D2 100%);
+          border-radius: 12px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          color: #FFFFFF;
+          box-shadow: 0 4px 12px rgba(33, 150, 243, 0.3);
+        }
+
+        .nav-title {
+          color: #1565C0;
+          font-weight: 700;
+          font-size: 1.25rem;
+        }
+
+        .nav-subtitle {
+          color: #1976D2;
+          font-size: 0.85rem;
+          font-weight: 500;
+        }
+
+        /* Buttons */
+        .btn-back {
+          background: rgba(33, 150, 243, 0.1);
+          border: 2px solid #2196F3;
+          border-radius: 10px;
+          color: #1976D2;
+          font-weight: 600;
+          padding: 10px 20px;
+          transition: all 0.3s ease;
+        }
+
+        .btn-back:hover {
+          background: #2196F3;
+          color: #FFFFFF;
+          transform: translateY(-2px);
+          box-shadow: 0 4px 12px rgba(33, 150, 243, 0.3);
+        }
+
+        .btn-add {
+          background: linear-gradient(135deg, #2196F3 0%, #1976D2 100%);
+          border: none;
+          border-radius: 10px;
+          color: #FFFFFF;
+          font-weight: 600;
+          padding: 10px 20px;
+          transition: all 0.3s ease;
+          box-shadow: 0 4px 12px rgba(33, 150, 243, 0.3);
+        }
+
+        .btn-add:hover {
+          transform: translateY(-2px);
+          box-shadow: 0 6px 16px rgba(33, 150, 243, 0.4);
+          color: #FFFFFF;
+        }
+
+        /* Action Card */
+        .action-card {
+          border: none;
+          border-radius: 14px;
+          background: #FFFFFF;
+        }
+
+        .search-icon {
+          background: #E3F2FD;
+          border: 2px solid #BBDEFB;
+          border-right: none;
+          border-radius: 12px 0 0 12px;
+          color: #1976D2;
+        }
+
+        .search-input {
+          border: 2px solid #BBDEFB;
+          border-left: none;
+          border-radius: 0 12px 12px 0;
+          padding: 12px 16px;
+          font-size: 1rem;
+        }
+
+        .search-input:focus {
+          border-color: #2196F3;
+          border-left: none;
+          box-shadow: none;
+          outline: none;
+        }
+
+        .btn-filter {
+          background: rgba(33, 150, 243, 0.1);
+          border: 2px solid #2196F3;
+          border-radius: 10px;
+          color: #1976D2;
+          font-weight: 600;
+          padding: 10px 16px;
+          transition: all 0.3s ease;
+        }
+
+        .btn-filter:hover {
+          background: #2196F3;
+          color: #FFFFFF;
+        }
+
+        .btn-pdf {
+          background: linear-gradient(135deg, #EF5350 0%, #F44336 100%);
+          border: none;
+          border-radius: 10px;
+          color: #FFFFFF;
+          font-weight: 600;
+          padding: 10px 16px;
+          transition: all 0.3s ease;
+        }
+
+        .btn-pdf:hover {
+          transform: translateY(-2px);
+          box-shadow: 0 4px 12px rgba(239, 83, 80, 0.3);
+          color: #FFFFFF;
+        }
+
+        /* Filter Panel */
+        .filter-card {
+          border: none;
+          border-radius: 18px;
+          background: #FFFFFF;
+          animation: slideDown 0.3s ease;
+        }
+
+        @keyframes slideDown {
+          from {
+            opacity: 0;
+            transform: translateY(-20px);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0);
+          }
+        }
+
+        .filter-title {
+          color: #1565C0;
+          font-weight: 700;
+          display: flex;
+          align-items: center;
+        }
+
+        .btn-close-filter {
+          background: rgba(33, 150, 243, 0.1);
+          border: none;
+          border-radius: 50%;
+          width: 36px;
+          height: 36px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          color: #1976D2;
+          cursor: pointer;
+          transition: all 0.3s ease;
+        }
+
+        .btn-close-filter:hover {
+          background: #2196F3;
+          color: #FFFFFF;
+          transform: rotate(90deg);
+        }
+
+        .filter-label {
+          color: #1565C0;
+          font-weight: 600;
+          font-size: 0.9rem;
+          margin-bottom: 0.5rem;
+          display: flex;
+          align-items: center;
+        }
+
+        .filter-input {
+          border: 2px solid #BBDEFB;
+          border-radius: 10px;
+          padding: 10px 14px;
+          font-size: 0.95rem;
+          transition: all 0.3s ease;
+          background: #F5F5F5;
+        }
+
+        .filter-input:focus {
+          border-color: #2196F3;
+          box-shadow: 0 0 0 0.2rem rgba(33, 150, 243, 0.15);
+          outline: none;
+          background: #FFFFFF;
+        }
+
+        .filter-actions {
+          display: flex;
+          align-items: center;
+          padding-top: 20px;
+          border-top: 2px solid #E3F2FD;
+          gap: 12px;
+        }
+
+        .btn-apply {
+          background: linear-gradient(135deg, #66BB6A 0%, #4CAF50 100%);
+          border: none;
+          border-radius: 10px;
+          color: #FFFFFF;
+          font-weight: 600;
+          padding: 10px 20px;
+          transition: all 0.3s ease;
+        }
+
+        .btn-apply:hover {
+          transform: translateY(-2px);
+          box-shadow: 0 4px 12px rgba(102, 187, 106, 0.3);
+          color: #FFFFFF;
+        }
+
+        .btn-clear {
+          background: rgba(33, 150, 243, 0.1);
+          border: 2px solid #2196F3;
+          border-radius: 10px;
+          color: #1976D2;
+          font-weight: 600;
+          padding: 10px 20px;
+          transition: all 0.3s ease;
+        }
+
+        .btn-clear:hover {
+          background: #2196F3;
+          color: #FFFFFF;
+        }
+
+        .result-count {
+          color: #1976D2;
+          font-weight: 600;
+          font-size: 0.95rem;
+        }
+
+        /* Table */
+        .table-card {
+          border: none;
+          border-radius: 18px;
+          background: #FFFFFF;
+          overflow: hidden;
+        }
+
+        .table-card .card-footer {
+          background: #E3F2FD;
+          border-top: 2px solid #BBDEFB;
+          padding: 12px 20px;
+        }
+
+        .income-table {
+          width: 100%;
+        }
+
+        .income-table thead {
+          background: linear-gradient(135deg, #2196F3 0%, #1976D2 100%);
+        }
+
+        .income-table thead th {
+          color: #FFFFFF !important;
+          font-weight: 700 !important;
+          text-transform: uppercase;
+          font-size: 0.85rem;
+          letter-spacing: 0.5px;
+          padding: 16px 20px !important;
+          border: none !important;
+          background: transparent !important;
+        }
+
+        .income-table tbody td {
+          padding: 16px 20px;
+          vertical-align: middle;
+          border-bottom: 1px solid #E3F2FD;
+          color: #333;
+        }
+
+        .income-row {
+          transition: all 0.2s ease;
+        }
+
+        .income-row:hover {
+          background: #F5F5F5;
+        }
+
+        /* Badges */
+        .id-badge {
+          background: linear-gradient(135deg, #E3F2FD 0%, #BBDEFB 100%);
+          color: #1565C0;
+          padding: 4px 12px;
+          border-radius: 20px;
+          font-weight: 700;
+          font-size: 0.85rem;
+          border: 2px solid #90CAF9;
+          display: inline-block;
+        }
+
+        .qty-badge {
+          background: linear-gradient(135deg, #E1F5FE 0%, #B3E5FC 100%);
+          color: #01579B;
+          padding: 6px 12px;
+          border-radius: 8px;
+          font-weight: 700;
+          font-size: 0.9rem;
+          border: 1px solid #81D4FA;
+          display: inline-block;
+        }
+
+        .price-badge {
+          background: linear-gradient(135deg, #C8E6C9 0%, #A5D6A7 100%);
+          color: #1B5E20;
+          padding: 6px 12px;
+          border-radius: 8px;
+          font-weight: 700;
+          font-size: 0.9rem;
+          border: 1px solid #81C784;
+          display: inline-block;
+        }
+
+        .status-badge {
+          padding: 6px 12px;
+          border-radius: 20px;
+          font-weight: 700;
+          font-size: 0.85rem;
+          display: inline-flex;
+          align-items: center;
+          text-transform: capitalize;
+        }
+
+        .badge-approved {
+          background: linear-gradient(135deg, #C8E6C9 0%, #A5D6A7 100%);
+          color: #1B5E20;
+          border: 1px solid #81C784;
+        }
+
+        .badge-rejected {
+          background: linear-gradient(135deg, #FFCDD2 0%, #EF9A9A 100%);
+          color: #C62828;
+          border: 1px solid #E57373;
+        }
+
+        .badge-pending {
+          background: linear-gradient(135deg, #FFE082 0%, #FFD54F 100%);
+          color: #F57F17;
+          border: 1px solid #FFCA28;
+        }
+
+        /* Action Buttons */
+        .btn-action {
+          width: 36px;
+          height: 36px;
+          padding: 0;
+          border-radius: 8px;
+          border: none;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          transition: all 0.3s ease;
+        }
+
+        .btn-view {
+          background: linear-gradient(135deg, #42A5F5 0%, #2196F3 100%);
+          color: #FFFFFF;
+        }
+
+        .btn-view:hover {
+          transform: translateY(-2px);
+          box-shadow: 0 4px 12px rgba(66, 165, 245, 0.3);
+          color: #FFFFFF;
+        }
+
+        .btn-delete {
+          background: linear-gradient(135deg, #EF5350 0%, #F44336 100%);
+          color: #FFFFFF;
+        }
+
+        .btn-delete:hover {
+          transform: translateY(-2px);
+          box-shadow: 0 4px 12px rgba(239, 83, 80, 0.3);
+          color: #FFFFFF;
+        }
+
+        /* No Records */
+        .no-records {
+          color: #1976D2;
+        }
+
+        .no-records svg {
+          color: #90CAF9;
+        }
+
+        /* Modal */
+        .modal-overlay {
+          position: fixed;
+          top: 0;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          background: rgba(33, 150, 243, 0.5);
+          backdrop-filter: blur(4px);
+          display: flex;
+          justify-content: center;
+          align-items: center;
+          z-index: 1050;
+          animation: fadeIn 0.3s ease;
+        }
+
+        .modal-container {
+          background: #FFFFFF;
+          border-radius: 20px;
+          width: 90%;
+          max-width: 600px;
+          max-height: 90vh;
+          overflow: hidden;
+          box-shadow: 0 20px 60px rgba(33, 150, 243, 0.4);
+          animation: slideUp 0.3s ease;
+        }
+
+        .modal-header-custom {
+          background: linear-gradient(135deg, #2196F3 0%, #1976D2 100%);
+          padding: 24px;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          color: #FFFFFF;
+        }
+
+        .modal-icon {
+          width: 56px;
+          height: 56px;
+          border-radius: 50%;
+          background: rgba(255, 255, 255, 0.2);
+          border: 3px solid rgba(255, 255, 255, 0.3);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          color: #FFFFFF;
+        }
+
+        .modal-title {
+          color: #FFFFFF;
+          font-weight: 700;
+          margin: 0;
+        }
+
+        .modal-subtitle {
+          color: rgba(255, 255, 255, 0.8);
+          font-size: 0.9rem;
+        }
+
+        .btn-close-modal {
+          background: rgba(255, 255, 255, 0.2);
+          border: none;
+          border-radius: 50%;
+          width: 40px;
+          height: 40px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          color: #FFFFFF;
+          cursor: pointer;
+          transition: all 0.3s ease;
+        }
+
+        .btn-close-modal:hover {
+          background: rgba(255, 255, 255, 0.3);
+          transform: rotate(90deg);
+        }
+
+        .modal-body-custom {
+          padding: 24px;
+          max-height: 60vh;
+          overflow-y: auto;
+        }
+
+        .detail-item {
+          display: flex;
+          padding: 16px;
+          border-bottom: 1px solid #E3F2FD;
+          transition: all 0.2s ease;
+        }
+
+        .detail-item:hover {
+          background: #F5F5F5;
+        }
+
+        .detail-item:last-child {
+          border-bottom: none;
+        }
+
+        .detail-icon {
+          width: 40px;
+          height: 40px;
+          border-radius: 10px;
+          background: linear-gradient(135deg, #E3F2FD 0%, #BBDEFB 100%);
+          border: 2px solid #90CAF9;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          color: #1976D2;
+          margin-right: 16px;
+          flex-shrink: 0;
+        }
+
+        .detail-content {
+          display: flex;
+          flex-direction: column;
+          flex: 1;
+        }
+
+        .detail-label {
+          font-size: 0.8rem;
+          color: #1976D2;
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+          margin-bottom: 4px;
+        }
+
+        .detail-value {
+          color: #333;
+          font-size: 1rem;
+          font-weight: 500;
+        }
+
+        .modal-footer-custom {
+          padding: 20px 24px;
+          border-top: 2px solid #E3F2FD;
+          display: flex;
+          justify-content: flex-end;
+          background: #F5F5F5;
+        }
+
+        .btn-modal-close {
+          background: rgba(33, 150, 243, 0.1);
+          border: 2px solid #2196F3;
+          border-radius: 10px;
+          color: #1976D2;
+          font-weight: 600;
+          padding: 10px 20px;
+          transition: all 0.3s ease;
+        }
+
+        .btn-modal-close:hover {
+          background: #2196F3;
+          color: #FFFFFF;
+        }
+
+        /* Animations */
+        @keyframes fadeIn {
+          from {
+            opacity: 0;
+          }
+          to {
+            opacity: 1;
+          }
+        }
+
+        @keyframes slideUp {
+          from {
+            opacity: 0;
+            transform: translateY(40px);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0);
+          }
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+          .nav-title {
+            font-size: 1.1rem;
+          }
+
+          .income-table thead th {
+            font-size: 0.75rem;
+            padding: 12px 10px !important;
+          }
+
+          .income-table tbody td {
+            padding: 12px 10px;
+            font-size: 0.9rem;
+          }
+
+          .btn-action {
+            width: 32px;
+            height: 32px;
+          }
+
+          .modal-container {
+            width: 95%;
+          }
+        }
+      `}</style>
     </div>
   );
 }
-
-// Helper function for approval status styling
-const getApprovalStyle = (status) => {
-  const baseStyle = {
-    padding: "4px 8px",
-    borderRadius: "4px",
-    fontSize: "12px",
-    fontWeight: "bold",
-  };
-
-  switch (status) {
-    case "approved":
-      return { ...baseStyle, backgroundColor: "#4CAF50", color: "white" };
-    case "rejected":
-      return { ...baseStyle, backgroundColor: "#f44336", color: "white" };
-    case "pending":
-      return { ...baseStyle, backgroundColor: "#FF9800", color: "white" };
-    default:
-      return { ...baseStyle, backgroundColor: "#999", color: "white" };
-  }
-};
-
-const styles = {
-  container: { padding: "20px", fontFamily: "Arial, sans-serif" },
-  header: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: "20px",
-    flexWrap: "wrap",
-    gap: "10px",
-  },
-  headerButtons: {
-    display: "flex",
-    gap: "10px",
-    flexWrap: "wrap",
-  },
-  addButton: {
-    backgroundColor: "#4CAF50",
-    color: "white",
-    border: "none",
-    padding: "10px 15px",
-    cursor: "pointer",
-    borderRadius: "5px",
-  },
-  filterButton: {
-    backgroundColor: "#2196F3",
-    color: "white",
-    border: "none",
-    padding: "10px 15px",
-    cursor: "pointer",
-    borderRadius: "5px",
-  },
-  pdfButton: {
-    backgroundColor: "#FF5722",
-    color: "white",
-    border: "none",
-    padding: "10px 15px",
-    cursor: "pointer",
-    borderRadius: "5px",
-  },
-  backButton: {
-    marginBottom: "15px",
-    backgroundColor: "#555",
-    color: "white",
-    border: "none",
-    padding: "8px 12px",
-    cursor: "pointer",
-    borderRadius: "5px",
-  },
-  filterPanel: {
-    backgroundColor: "#f9f9f9",
-    border: "1px solid #ddd",
-    borderRadius: "8px",
-    padding: "20px",
-    marginBottom: "20px",
-  },
-  filterTitle: {
-    marginTop: 0,
-    marginBottom: "15px",
-    color: "#333",
-  },
-  filterGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
-    gap: "15px",
-    marginBottom: "15px",
-  },
-  filterGroup: {
-    display: "flex",
-    flexDirection: "column",
-  },
-  filterLabel: {
-    fontSize: "13px",
-    fontWeight: "bold",
-    marginBottom: "5px",
-    color: "#555",
-  },
-  filterInput: {
-    padding: "8px",
-    border: "1px solid #ccc",
-    borderRadius: "4px",
-    fontSize: "14px",
-  },
-  filterActions: {
-    display: "flex",
-    gap: "10px",
-    alignItems: "center",
-    flexWrap: "wrap",
-  },
-  applyFilterButton: {
-    backgroundColor: "#4CAF50",
-    color: "white",
-    border: "none",
-    padding: "10px 20px",
-    cursor: "pointer",
-    borderRadius: "5px",
-    fontWeight: "bold",
-  },
-  clearFilterButton: {
-    backgroundColor: "#999",
-    color: "white",
-    border: "none",
-    padding: "10px 20px",
-    cursor: "pointer",
-    borderRadius: "5px",
-  },
-  resultCount: {
-    fontSize: "14px",
-    color: "#555",
-    fontWeight: "bold",
-  },
-  tableContainer: { overflowX: "auto" },
-  table: { width: "100%", borderCollapse: "collapse" },
-  th: { border: "1px solid #ddd", padding: "8px", backgroundColor: "#f2f2f2" },
-  td: { border: "1px solid #ddd", padding: "8px", textAlign: "center" },
-  tr: { cursor: "pointer" },
-  noRows: { textAlign: "center", padding: "20px", color: "#888" },
-  button: {
-    margin: "0 5px",
-    padding: "6px 10px",
-    border: "none",
-    borderRadius: "4px",
-    cursor: "pointer",
-  },
-  deleteButton: { backgroundColor: "#f44336", color: "white" },
-  loading: { textAlign: "center", padding: "20px" },
-  error: { textAlign: "center", padding: "20px", color: "red" },
-  modalOverlay: {
-    position: "fixed",
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: "rgba(0,0,0,0.5)",
-    display: "flex",
-    justifyContent: "center",
-    alignItems: "center",
-    zIndex: 1000,
-  },
-  modalContent: {
-    backgroundColor: "white",
-    padding: "20px",
-    borderRadius: "8px",
-    width: "420px",
-    maxHeight: "80vh",
-    overflowY: "auto",
-  },
-  modalHeader: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: "15px",
-  },
-  modalTitle: { margin: 0 },
-  closeButton: {
-    background: "none",
-    border: "none",
-    fontSize: "20px",
-    cursor: "pointer",
-  },
-  modalBody: { marginBottom: "15px" },
-  detailRow: {
-    display: "flex",
-    justifyContent: "space-between",
-    marginBottom: "8px",
-  },
-  detailLabel: { fontWeight: "bold" },
-  detailValue: { marginLeft: "10px" },
-  modalFooter: { display: "flex", justifyContent: "flex-end" },
-  modalCloseBtn: {
-    backgroundColor: "#777",
-    color: "white",
-    border: "none",
-    padding: "8px 12px",
-    borderRadius: "5px",
-    cursor: "pointer",
-  },
-};
 
 export default IncomeManagement;

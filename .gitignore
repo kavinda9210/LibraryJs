@@ -1,0 +1,46 @@
+# ==============================================================================
+# Library LMS - Git Ignore Configuration
+# ==============================================================================
+
+# Node dependencies
+node_modules/
+*/node_modules/
+
+# Environment configuration (Use .env.example instead)
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Production build artifacts
+build/
+frontend/build/
+dist/
+
+# Logs & PM2 runtime logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+backend/backups/task_scheduler.log
+
+# SQLite temporary journal and WAL files
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal
+
+# Runtime generated automated backups (Keeps directory clean)
+backend/backups/backup_*.sqlite
+
+# Operating System & Editor Metadata
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

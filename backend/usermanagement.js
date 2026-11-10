@@ -1,15 +1,23 @@
-// usermanagement.js
 const express = require("express");
 const router = express.Router();
+const bcrypt = require("bcryptjs");
 const db = require("./db");
+const { authenticateToken, requireAdmin } = require("./middleware/auth");
+
+// All user management routes require admin access
+router.use(authenticateToken, requireAdmin);
 
 // Get all users
 router.get("/", (req, res) => {
-  db.all("SELECT id, username, email, contact_number, id_number, address FROM users", [], (err, rows) => {
+  const sql = `
+    SELECT id, username, email, contact_number, id_number, address, role 
+    FROM users 
+    ORDER BY id ASC
+  `;
+  db.all(sql, [], (err, rows) => {
     if (err) {
       console.error("Error fetching users:", err);
-      res.status(500).json({ error: "Failed to fetch users" });
-      return;
+      return res.status(500).json({ error: "Failed to fetch users" });
     }
     res.json(rows);
   });
@@ -17,17 +25,20 @@ router.get("/", (req, res) => {
 
 // Get single user by ID
 router.get("/:id", (req, res) => {
-  const id = req.params.id;
-  
-  db.get("SELECT id, username, email, contact_number, id_number, address FROM users WHERE id = ?", [id], (err, row) => {
+  const { id } = req.params;
+  const sql = `
+    SELECT id, username, email, contact_number, id_number, address, role 
+    FROM users 
+    WHERE id = ?
+  `;
+
+  db.get(sql, [id], (err, row) => {
     if (err) {
       console.error("Error fetching user:", err);
-      res.status(500).json({ error: "Failed to fetch user" });
-      return;
+      return res.status(500).json({ error: "Failed to fetch user" });
     }
     if (!row) {
-      res.status(404).json({ error: "User not found" });
-      return;
+      return res.status(404).json({ error: "User not found" });
     }
     res.json(row);
   });
@@ -35,53 +46,61 @@ router.get("/:id", (req, res) => {
 
 // Create user
 router.post("/", (req, res) => {
-  const { username, email, password, contact_number, id_number, address } = req.body;
-  
+  const { username, email, password, contact_number, id_number, address, role } = req.body;
+
   // Validation
   if (!username || !email || !password) {
-    res.status(400).json({ error: "Username, email, and password are required" });
-    return;
+    return res.status(400).json({ error: "Username, email, and password are required" });
   }
 
   // Email validation
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   if (!emailRegex.test(email)) {
-    res.status(400).json({ error: "Invalid email format" });
-    return;
+    return res.status(400).json({ error: "Invalid email format" });
   }
-  
+
+  const cleanUsername = username.trim();
+  const cleanEmail = email.trim().toLowerCase();
+  const cleanRole = role === "admin" ? "admin" : "user";
+  const hashedPassword = bcrypt.hashSync(password, 10);
+
+  const sql = `
+    INSERT INTO users (username, email, password, contact_number, id_number, address, role) 
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `;
+
   db.run(
-    `INSERT INTO users (username, email, password, contact_number, id_number, address) 
-     VALUES (?, ?, ?, ?, ?, ?)`,
+    sql,
     [
-      username.trim(), 
-      email.trim().toLowerCase(), 
-      password, 
-      contact_number ? contact_number.trim() : null, 
-      id_number ? id_number.trim() : null, 
-      address ? address.trim() : null
+      cleanUsername,
+      cleanEmail,
+      hashedPassword,
+      contact_number ? contact_number.trim() : null,
+      id_number ? id_number.trim() : null,
+      address ? address.trim() : null,
+      cleanRole,
     ],
     function (err) {
       if (err) {
         console.error("Error creating user:", err);
-        if (err.message.includes("UNIQUE")) {
-          res.status(409).json({ error: "Username or email already exists" });
-        } else {
-          res.status(500).json({ error: "Failed to create user" });
+        if (err.message && (err.message.includes("UNIQUE") || err.message.includes("constraint failed"))) {
+          return res.status(409).json({ error: "Username or email already exists" });
         }
-        return;
+        return res.status(500).json({ error: "Failed to create user" });
       }
+
       res.status(201).json({
         message: "User created successfully",
         id: this.lastID,
         data: {
           id: this.lastID,
-          username: username.trim(),
-          email: email.trim().toLowerCase(),
-          contact_number,
-          id_number,
-          address
-        }
+          username: cleanUsername,
+          email: cleanEmail,
+          contact_number: contact_number || null,
+          id_number: id_number || null,
+          address: address || null,
+          role: cleanRole,
+        },
       });
     }
   );
@@ -89,96 +108,108 @@ router.post("/", (req, res) => {
 
 // Update user
 router.put("/:id", (req, res) => {
-  const id = req.params.id;
-  const { username, email, password, contact_number, id_number, address } = req.body;
-  
+  const { id } = req.params;
+  const { username, email, password, contact_number, id_number, address, role } = req.body;
+
   // Validation
   if (!username || !email) {
-    res.status(400).json({ error: "Username and email are required" });
-    return;
+    return res.status(400).json({ error: "Username and email are required" });
   }
 
-  // Email validation
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   if (!emailRegex.test(email)) {
-    res.status(400).json({ error: "Invalid email format" });
-    return;
+    return res.status(400).json({ error: "Invalid email format" });
   }
-  
-  // Build query based on whether password is provided
-  let query, params;
+
+  const cleanUsername = username.trim();
+  const cleanEmail = email.trim().toLowerCase();
+  const cleanRole = role === "admin" ? "admin" : "user";
+
+  let query;
+  let params;
+
   if (password && password.trim() !== "") {
-    query = `UPDATE users 
-             SET username = ?, email = ?, password = ?, contact_number = ?, id_number = ?, address = ? 
-             WHERE id = ?`;
+    const hashedPassword = bcrypt.hashSync(password, 10);
+    query = `
+      UPDATE users 
+      SET username = ?, email = ?, password = ?, contact_number = ?, id_number = ?, address = ?, role = ? 
+      WHERE id = ?
+    `;
     params = [
-      username.trim(), 
-      email.trim().toLowerCase(), 
-      password, 
-      contact_number ? contact_number.trim() : null, 
-      id_number ? id_number.trim() : null, 
-      address ? address.trim() : null, 
-      id
+      cleanUsername,
+      cleanEmail,
+      hashedPassword,
+      contact_number ? contact_number.trim() : null,
+      id_number ? id_number.trim() : null,
+      address ? address.trim() : null,
+      cleanRole,
+      id,
     ];
   } else {
-    query = `UPDATE users 
-             SET username = ?, email = ?, contact_number = ?, id_number = ?, address = ? 
-             WHERE id = ?`;
+    query = `
+      UPDATE users 
+      SET username = ?, email = ?, contact_number = ?, id_number = ?, address = ?, role = ? 
+      WHERE id = ?
+    `;
     params = [
-      username.trim(), 
-      email.trim().toLowerCase(), 
-      contact_number ? contact_number.trim() : null, 
-      id_number ? id_number.trim() : null, 
-      address ? address.trim() : null, 
-      id
+      cleanUsername,
+      cleanEmail,
+      contact_number ? contact_number.trim() : null,
+      id_number ? id_number.trim() : null,
+      address ? address.trim() : null,
+      cleanRole,
+      id,
     ];
   }
-  
+
   db.run(query, params, function (err) {
     if (err) {
       console.error("Error updating user:", err);
-      if (err.message.includes("UNIQUE")) {
-        res.status(409).json({ error: "Username or email already exists" });
-      } else {
-        res.status(500).json({ error: "Failed to update user" });
+      if (err.message && (err.message.includes("UNIQUE") || err.message.includes("constraint failed"))) {
+        return res.status(409).json({ error: "Username or email already exists" });
       }
-      return;
+      return res.status(500).json({ error: "Failed to update user" });
     }
+
     if (this.changes === 0) {
-      res.status(404).json({ error: "User not found" });
-      return;
+      return res.status(404).json({ error: "User not found" });
     }
+
     res.json({
       message: "User updated successfully",
-      data: { 
-        id: parseInt(id), 
-        username: username.trim(), 
-        email: email.trim().toLowerCase(), 
-        contact_number, 
-        id_number, 
-        address 
-      }
+      data: {
+        id: parseInt(id, 10),
+        username: cleanUsername,
+        email: cleanEmail,
+        contact_number,
+        id_number,
+        address,
+        role: cleanRole,
+      },
     });
   });
 });
 
 // Delete user
 router.delete("/:id", (req, res) => {
-  const id = req.params.id;
-  
+  const { id } = req.params;
+
+  // Prevent admin from deleting themselves
+  if (req.user && String(req.user.id) === String(id)) {
+    return res.status(400).json({ error: "You cannot delete your own account while logged in" });
+  }
+
   db.run("DELETE FROM users WHERE id = ?", [id], function (err) {
     if (err) {
       console.error("Error deleting user:", err);
-      res.status(500).json({ error: "Failed to delete user" });
-      return;
+      return res.status(500).json({ error: "Failed to delete user" });
     }
     if (this.changes === 0) {
-      res.status(404).json({ error: "User not found" });
-      return;
+      return res.status(404).json({ error: "User not found" });
     }
     res.json({
       message: "User deleted successfully",
-      id: parseInt(id)
+      id: parseInt(id, 10),
     });
   });
 });

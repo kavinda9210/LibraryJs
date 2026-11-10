@@ -1,644 +1,475 @@
 const express = require("express");
 const router = express.Router();
-const db = require("./db");
 const PDFDocument = require("pdfkit");
-const fs = require("fs");
-const path = require("path");
+const db = require("./db");
+const { authenticateToken, requireUserOrAdmin } = require("./middleware/auth");
 
-/**
- * OUTGOING ROUTES
- * Mount in server.js:
- *   const outgoingRoutes = require("./outgoing");
- *   app.use("/outgoing", outgoingRoutes);
- *
- * Endpoints:
- *   GET    /outgoing/             -> all outgoing records
- *   GET    /outgoing/:record_id   -> single record
- *   POST   /outgoing/             -> add outgoing record (updates itam.quantity, auto-calculates sell_price, generates PDF bill)
- *   DELETE /outgoing/:record_id   -> delete record (restores stock to itam)
- *   GET    /outgoing/bill/:record_id -> download PDF bill
- */
+// All outgoing routes require authentication
+router.use(authenticateToken, requireUserOrAdmin);
 
-// Create bills directory if it doesn't exist
-const billsDir = path.join(__dirname, "bills");
-if (!fs.existsSync(billsDir)) {
-  fs.mkdirSync(billsDir);
+// Helper function to build PDF invoice
+function buildInvoiceStream(billData, outputStream) {
+  const doc = new PDFDocument({ margin: 50 });
+  doc.pipe(outputStream);
+
+  // Header
+  doc
+    .fontSize(22)
+    .font("Helvetica-Bold")
+    .fillColor("#1565C0")
+    .text("SALES INVOICE", { align: "center" })
+    .moveDown(0.3);
+
+  doc
+    .fontSize(13)
+    .font("Helvetica-Bold")
+    .fillColor("#1976D2")
+    .text("Library Service Board - Central Province", { align: "center" })
+    .moveDown(0.2);
+
+  doc
+    .fontSize(9)
+    .font("Helvetica")
+    .fillColor("#444444")
+    .text("Gatambe, Peradeniya | Tel: 0812384032 | Email: libraryserviceboardcpc@gmail.com", { align: "center" })
+    .moveDown(1);
+
+  doc.strokeColor("#2196F3").lineWidth(2).moveTo(50, doc.y).lineTo(550, doc.y).stroke().moveDown(0.5);
+
+  // Bill metadata
+  const leftCol = 50;
+  const rightCol = 320;
+  const infoY = doc.y;
+
+  doc.fontSize(10).font("Helvetica-Bold").fillColor("#1565C0").text("Bill To:", leftCol, infoY);
+  doc.font("Helvetica").fillColor("#333333").text(billData.buy_company || "Customer", leftCol, infoY + 15);
+
+  doc.font("Helvetica-Bold").fillColor("#1565C0").text("Bill Number:", rightCol, infoY);
+  doc.font("Helvetica").fillColor("#333333").text(billData.bill_number, rightCol + 85, infoY);
+
+  doc.font("Helvetica-Bold").fillColor("#1565C0").text("Date:", rightCol, infoY + 15);
+  doc.font("Helvetica").fillColor("#333333").text(billData.date, rightCol + 85, infoY + 15);
+
+  doc.moveDown(3);
+
+  // Table Header
+  const tableTop = doc.y + 10;
+  doc.fillColor("#E3F2FD").rect(50, tableTop - 4, 500, 20).fill();
+  doc.fontSize(9).font("Helvetica-Bold").fillColor("#1565C0");
+  doc.text("Item Name", 60, tableTop);
+  doc.text("Qty", 250, tableTop);
+  doc.text("Unit Price (Rs.)", 320, tableTop);
+  doc.text("Amount (Rs.)", 450, tableTop);
+
+  doc.strokeColor("#BBDEFB").lineWidth(1).moveTo(50, tableTop + 18).lineTo(550, tableTop + 18).stroke();
+
+  // Items
+  let totalAmount = 0;
+  let currentY = tableTop + 24;
+  doc.font("Helvetica").fontSize(9);
+
+  (billData.items || []).forEach((item, index) => {
+    if (currentY > 700) {
+      doc.addPage();
+      currentY = 50;
+    }
+
+    const qty = Number(item.qty) || 0;
+    const sellTotal = Number(item.sell_price) || 0;
+    const unitPrice = qty > 0 ? (sellTotal / qty) : 0;
+    totalAmount += sellTotal;
+
+    if (index % 2 === 0) {
+      doc.fillColor("#F9F9F9").rect(50, currentY - 2, 500, 18).fill();
+    }
+
+    doc.fillColor("#333333");
+    doc.text(String(item.itam_name).substring(0, 30), 60, currentY, { width: 180 });
+    doc.text(qty.toString(), 250, currentY);
+    doc.text(unitPrice.toFixed(2), 320, currentY);
+    doc.text(sellTotal.toFixed(2), 450, currentY);
+
+    currentY += 20;
+  });
+
+  // Total Box
+  doc.strokeColor("#2196F3").lineWidth(1.5).moveTo(50, currentY + 5).lineTo(550, currentY + 5).stroke();
+  const summaryY = currentY + 15;
+  doc.fillColor("#E3F2FD").rect(320, summaryY - 4, 230, 26).fill();
+  doc.fontSize(11).font("Helvetica-Bold").fillColor("#1565C0");
+  doc.text("Total Amount:", 330, summaryY + 2);
+  doc.text(`Rs. ${totalAmount.toFixed(2)}`, 450, summaryY + 2);
+
+  // Footer
+  doc
+    .fontSize(9)
+    .font("Helvetica-Oblique")
+    .fillColor("#1976D2")
+    .text("Thank you for your business!", 50, doc.page.height - 60, { align: "center" })
+    .fontSize(8)
+    .fillColor("#888888")
+    .text("This is a computer-generated invoice.", 50, doc.page.height - 45, { align: "center" });
+
+  doc.end();
 }
 
-// ✅ GET all outgoing records
+// GET all outgoing records
 router.get("/", (req, res) => {
   db.all("SELECT * FROM outgoing ORDER BY record_id DESC", [], (err, rows) => {
     if (err) {
       console.error("GET /outgoing error:", err.message);
-      return res.status(500).json({ message: "Server error" });
+      return res.status(500).json({ message: "Server error fetching outgoing records" });
     }
     res.json(rows);
   });
 });
 
-// ✅ GET one outgoing record
+// GET single record by ID
 router.get("/:record_id", (req, res) => {
   const { record_id } = req.params;
-
-  db.get(
-    "SELECT * FROM outgoing WHERE record_id = ?",
-    [record_id],
-    (err, row) => {
-      if (err) {
-        console.error("GET /outgoing/:id error:", err.message);
-        return res.status(500).json({ message: "Server error" });
-      }
-      if (!row) return res.status(404).json({ message: "Record not found" });
-      res.json(row);
+  db.get("SELECT * FROM outgoing WHERE record_id = ?", [record_id], (err, row) => {
+    if (err) {
+      console.error("GET /outgoing/:id error:", err.message);
+      return res.status(500).json({ message: "Server error fetching record" });
     }
-  );
+    if (!row) {
+      return res.status(404).json({ message: "Record not found" });
+    }
+    res.json(row);
+  });
 });
 
-// ✅ Function to generate PDF bill
-function generateBill(recordData, filepath) {
-  return new Promise((resolve, reject) => {
-    try {
-      const doc = new PDFDocument({ margin: 50 });
-      const stream = fs.createWriteStream(filepath);
-
-      doc.pipe(stream);
-
-      // Header
-      doc
-        .fontSize(24)
-        .font("Helvetica-Bold")
-        .text("SALES INVOICE", { align: "center" })
-        .moveDown(0.5);
-
-      // Company Info (customize this)
-      doc
-        .fontSize(10)
-        .font("Helvetica")
-        .text("Your Company Name", { align: "center" })
-        .text("Address Line 1, City, Country", { align: "center" })
-        .text("Phone: +123456789 | Email: info@company.com", { align: "center" })
-        .moveDown(1);
-
-      // Divider line
-      doc
-        .moveTo(50, doc.y)
-        .lineTo(550, doc.y)
-        .stroke()
-        .moveDown(0.5);
-
-      // Bill details in two columns
-      const leftColumn = 50;
-      const rightColumn = 320;
-      let currentY = doc.y;
-
-      doc.fontSize(10).font("Helvetica-Bold");
-      doc.text("Bill To:", leftColumn, currentY);
-      doc.font("Helvetica");
-      doc.text(recordData.buy_company, leftColumn, currentY + 15);
-
-      doc.font("Helvetica-Bold");
-      doc.text("Bill Number:", rightColumn, currentY);
-      doc.text("Date:", rightColumn, currentY + 15);
-      doc.text("Record ID:", rightColumn, currentY + 30);
-
-      doc.font("Helvetica");
-      doc.text(recordData.bill_number, rightColumn + 80, currentY);
-      doc.text(recordData.date, rightColumn + 80, currentY + 15);
-      doc.text(`#${recordData.record_id}`, rightColumn + 80, currentY + 30);
-
-      doc.moveDown(3);
-
-      // Divider line
-      doc
-        .moveTo(50, doc.y)
-        .lineTo(550, doc.y)
-        .stroke()
-        .moveDown(0.5);
-
-      // Table Header
-      currentY = doc.y;
-      doc.fontSize(10).font("Helvetica-Bold");
-      doc.text("Item", leftColumn, currentY);
-      doc.text("Qty", 250, currentY);
-      doc.text("Unit Price", 320, currentY);
-      doc.text("Amount", 450, currentY);
-
-      doc.moveDown(0.5);
-
-      // Divider line
-      doc
-        .moveTo(50, doc.y)
-        .lineTo(550, doc.y)
-        .stroke()
-        .moveDown(0.5);
-
-      // Table Content
-      currentY = doc.y;
-      const unitPrice = recordData.sell_price / recordData.qty;
-      
-      doc.font("Helvetica");
-      doc.text(recordData.itam_name, leftColumn, currentY, { width: 180 });
-      doc.text(recordData.qty.toString(), 250, currentY);
-      doc.text(unitPrice.toFixed(2), 320, currentY);
-      doc.text(recordData.sell_price.toFixed(2), 450, currentY);
-
-      doc.moveDown(2);
-
-      // Divider line
-      doc
-        .moveTo(50, doc.y)
-        .lineTo(550, doc.y)
-        .stroke()
-        .moveDown(0.5);
-
-      // Total section
-      currentY = doc.y;
-      doc.fontSize(12).font("Helvetica-Bold");
-      doc.text("Total Amount:", 350, currentY);
-      doc.text(`${recordData.sell_price.toFixed(2)}`, 450, currentY);
-
-      doc.moveDown(2);
-
-      // Footer
-      doc
-        .fontSize(9)
-        .font("Helvetica-Oblique")
-        .text("Thank you for your business!", { align: "center" })
-        .moveDown(0.5)
-        .text("This is a computer-generated invoice.", { align: "center" });
-
-      doc.end();
-
-      stream.on("finish", () => resolve(filepath));
-      stream.on("error", reject);
-    } catch (error) {
-      reject(error);
-    }
-  });
-}
-
-// ✅ POST add outgoing record (stock out)
-// - Auto-calculates sell_price from itam.price_per_one * qty
-// - checks current itam.quantity
-// - balance = quantity - qty
-// - updates itam.quantity = balance
-// - saves outgoing record with balance + profit
-// - generates PDF bill
+// POST create multi-item bill - ATOMIC SQL TRANSACTION
 router.post("/", (req, res) => {
-  const { date, buy_company, bill_number, itam_name, qty, buy_price } = req.body;
+  const { date, buy_company, bill_number, items } = req.body;
 
-  if (
-    !date ||
-    !buy_company ||
-    !bill_number ||
-    !itam_name ||
-    qty == null ||
-    buy_price == null
-  ) {
-    return res.status(400).json({ message: "All fields are required" });
+  if (!date || !buy_company || !bill_number || !Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({
+      message: "Date, customer/company, bill number, and non-empty items array are required",
+    });
   }
 
-  const qtyNum = Number(qty);
-  const buyNum = Number(buy_price);
+  // Validate items format
+  for (const item of items) {
+    if (!item.itam_name || item.qty == null) {
+      return res.status(400).json({
+        message: `Each item must have itam_name and qty. Failed on item: ${JSON.stringify(item)}`,
+      });
+    }
 
-  if (Number.isNaN(qtyNum) || qtyNum <= 0) {
-    return res.status(400).json({ message: "qty must be a positive number" });
-  }
-  if (Number.isNaN(buyNum) || buyNum < 0) {
-    return res.status(400).json({ message: "buy_price must be valid" });
+    const qty = Number(item.qty);
+    if (Number.isNaN(qty) || qty <= 0 || !Number.isInteger(qty)) {
+      return res.status(400).json({ message: `Quantity for "${item.itam_name}" must be a positive integer` });
+    }
+
+    if (item.buy_price != null && (Number.isNaN(Number(item.buy_price)) || Number(item.buy_price) < 0)) {
+      return res.status(400).json({ message: `Cost price for "${item.itam_name}" must be a non-negative number` });
+    }
   }
 
+  // Execute in an atomic transaction
   db.serialize(() => {
-    // 1) get current stock and price_per_one
-    db.get(
-      "SELECT quantity, price_per_one FROM itam WHERE itam_name = ?",
-      [itam_name],
-      (err, itamRow) => {
-        if (err) {
-          console.error("Stock check error:", err.message);
-          return res.status(500).json({ message: "Server error" });
-        }
+    db.run("BEGIN IMMEDIATE TRANSACTION", (transErr) => {
+      if (transErr) {
+        console.error("Transaction begin error:", transErr);
+        return res.status(500).json({ message: "Failed to begin transaction" });
+      }
 
-        if (!itamRow) {
-          return res.status(404).json({ message: "Item not found in itam table" });
-        }
+      const rollback = (status, msg) => {
+        db.run("ROLLBACK", () => res.status(status).json({ message: msg }));
+      };
 
-        const currentQty = Number(itamRow.quantity);
-        const pricePerOne = Number(itamRow.price_per_one);
-        const balance = currentQty - qtyNum;
+      // Process items sequentially inside transaction
+      let allInserted = [];
+      let itemIndex = 0;
 
-        if (balance < 0) {
-          return res.status(400).json({
-            message: `Not enough stock. Available: ${currentQty}, Requested: ${qtyNum}`,
+      function processNextItem() {
+        if (itemIndex >= items.length) {
+          // All items processed successfully -> COMMIT
+          db.run("COMMIT", (commitErr) => {
+            if (commitErr) return rollback(500, "Commit failed");
+            return res.status(201).json({
+              message: "Bill created successfully and stock updated",
+              items: allInserted,
+              bill_url: `/outgoing/bill/${encodeURIComponent(bill_number.trim())}`,
+              bill_number: bill_number.trim(),
+            });
           });
+          return;
         }
 
-        // Auto-calculate sell_price
-        const sellNum = pricePerOne * qtyNum;
-        const profit = sellNum - (buyNum * qtyNum);
+        const currentItem = items[itemIndex];
+        const itamName = String(currentItem.itam_name).trim();
+        const qtyNum = Number(currentItem.qty);
 
-        // 2) update stock
-        db.run(
-          "UPDATE itam SET quantity = ? WHERE itam_name = ?",
-          [balance, itam_name],
-          function (err) {
-            if (err) {
-              console.error("Stock update error:", err.message);
-              return res.status(500).json({ message: "Server error" });
+        // Fetch current stock, selling price & cost price from itam table
+        db.get(
+          "SELECT itam_id, quantity, price_per_one, buy_price FROM itam WHERE itam_name = ?",
+          [itamName],
+          (err, itamRow) => {
+            if (err) return rollback(500, "Database error during stock check");
+            if (!itamRow) return rollback(404, `Item "${itamName}" does not exist in inventory`);
+
+            const currentQty = Number(itamRow.quantity);
+            const unitSellPrice = Number(itamRow.price_per_one);
+            // Auto cost price from inventory record; fallback to client provided if any
+            const unitCostPrice = (currentItem.buy_price != null && !Number.isNaN(Number(currentItem.buy_price)) && Number(currentItem.buy_price) > 0)
+              ? Number(currentItem.buy_price)
+              : Number(itamRow.buy_price || 0);
+
+            const newBalance = currentQty - qtyNum;
+
+            if (newBalance < 0) {
+              return rollback(
+                400,
+                `Insufficient stock for "${itamName}". Available: ${currentQty}, Requested: ${qtyNum}`
+              );
             }
 
-            // 3) insert outgoing record
-            const sql = `
-              INSERT INTO outgoing
-              (date, buy_company, bill_number, itam_name, qty, balance, sell_price, buy_price, profit)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            `;
+            const totalSell = unitSellPrice * qtyNum;
+            const totalCost = unitCostPrice * qtyNum;
+            const profit = totalSell - totalCost;
 
+            // Deduct stock
             db.run(
-              sql,
-              [date, buy_company, bill_number, itam_name, qtyNum, balance, sellNum, buyNum, profit],
-              function (err) {
-                if (err) {
-                  console.error("Insert outgoing error:", err.message);
-                  return res.status(500).json({ message: "Server error" });
-                }
+              "UPDATE itam SET quantity = ? WHERE itam_name = ?",
+              [newBalance, itamName],
+              (updateErr) => {
+                if (updateErr) return rollback(500, `Failed to update stock for "${itamName}"`);
 
-                const recordId = this.lastID;
+                // Insert into outgoing
+                const insertSql = `
+                  INSERT INTO outgoing (date, buy_company, bill_number, itam_name, qty, balance, sell_price, buy_price, profit)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                `;
 
-                // 4) Generate PDF bill
-                const recordData = {
-                  record_id: recordId,
-                  date,
-                  buy_company,
-                  bill_number,
-                  itam_name,
-                  qty: qtyNum,
-                  sell_price: sellNum,
-                  buy_price: buyNum,
-                  profit,
-                  balance,
-                };
+                db.run(
+                  insertSql,
+                  [
+                    String(date).trim(),
+                    String(buy_company).trim(),
+                    String(bill_number).trim(),
+                    itamName,
+                    qtyNum,
+                    newBalance,
+                    totalSell,
+                    unitCostPrice,
+                    profit,
+                  ],
+                  function (insertErr) {
+                    if (insertErr) return rollback(500, `Failed to record sale for "${itamName}"`);
 
-                const billFilename = `bill_${bill_number}_${recordId}.pdf`;
-                const billPath = path.join(billsDir, billFilename);
-
-                generateBill(recordData, billPath)
-                  .then(() => {
-                    return res.status(201).json({
-                      message: "Outgoing record added, stock updated & bill generated",
-                      record_id: recordId,
-                      balance,
-                      sell_price: sellNum,
+                    allInserted.push({
+                      record_id: this.lastID,
+                      itam_name: itamName,
+                      qty: qtyNum,
+                      unit_price: unitSellPrice,
+                      unit_cost: unitCostPrice,
+                      sell_price: totalSell,
+                      buy_price: unitCostPrice,
                       profit,
-                      bill_url: `/outgoing/bill/${recordId}`,
-                      bill_filename: billFilename,
+                      balance: newBalance,
                     });
-                  })
-                  .catch((pdfErr) => {
-                    console.error("PDF generation error:", pdfErr);
-                    // Still return success for the record, but note PDF failed
-                    return res.status(201).json({
-                      message: "Outgoing record added & stock updated (bill generation failed)",
-                      record_id: recordId,
-                      balance,
-                      sell_price: sellNum,
-                      profit,
-                      pdf_error: true,
-                    });
-                  });
+
+                    itemIndex++;
+                    processNextItem();
+                  }
+                );
               }
             );
           }
         );
       }
-    );
+
+      processNextItem();
+    });
   });
 });
 
-// ✅ GET download PDF bill
-router.get("/bill/:record_id", (req, res) => {
-  const { record_id } = req.params;
+// GET download PDF bill by bill number - Stream directly
+router.get("/bill/:bill_number", (req, res) => {
+  const { bill_number } = req.params;
 
-  // Get record details
-  db.get(
-    "SELECT * FROM outgoing WHERE record_id = ?",
-    [record_id],
-    (err, row) => {
+  db.all(
+    "SELECT * FROM outgoing WHERE bill_number = ?",
+    [bill_number],
+    (err, rows) => {
       if (err) {
-        console.error("GET bill error:", err.message);
-        return res.status(500).json({ message: "Server error" });
+        console.error("GET bill error:", err);
+        return res.status(500).json({ message: "Server error fetching bill" });
       }
-      if (!row) {
-        return res.status(404).json({ message: "Record not found" });
+      if (!rows || rows.length === 0) {
+        return res.status(404).json({ message: "Bill not found" });
       }
 
-      const billFilename = `bill_${row.bill_number}_${record_id}.pdf`;
-      const billPath = path.join(billsDir, billFilename);
+      const billData = {
+        date: rows[0].date,
+        buy_company: rows[0].buy_company,
+        bill_number: rows[0].bill_number,
+        items: rows.map((r) => ({
+          itam_name: r.itam_name,
+          qty: r.qty,
+          sell_price: r.sell_price,
+        })),
+      };
 
-      // Check if bill exists
-      if (fs.existsSync(billPath)) {
-        res.download(billPath, billFilename);
-      } else {
-        // Generate bill if it doesn't exist
-        generateBill(row, billPath)
-          .then(() => {
-            res.download(billPath, billFilename);
-          })
-          .catch((pdfErr) => {
-            console.error("PDF generation error:", pdfErr);
-            res.status(500).json({ message: "Failed to generate bill" });
-          });
-      }
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader(
+        "Content-Disposition",
+        `inline; filename="bill_${bill_number.replace(/[^a-zA-Z0-9]/g, "_")}.pdf"`
+      );
+
+      buildInvoiceStream(billData, res);
     }
   );
 });
 
-// ✅ DELETE outgoing record AND restore stock
+// DELETE record and restore stock - ATOMIC SQL TRANSACTION
 router.delete("/:record_id", (req, res) => {
   const { record_id } = req.params;
 
   db.serialize(() => {
-    // 1) Get the outgoing record to know qty, itam_name, and bill info
-    db.get(
-      "SELECT itam_name, qty, bill_number FROM outgoing WHERE record_id = ?",
-      [record_id],
-      (err, row) => {
-        if (err) {
-          console.error("DELETE fetch error:", err.message);
-          return res.status(500).json({ message: "Server error" });
-        }
-        if (!row) {
-          return res.status(404).json({ message: "Record not found" });
-        }
+    db.run("BEGIN IMMEDIATE TRANSACTION", (transErr) => {
+      if (transErr) return res.status(500).json({ message: "Failed to begin transaction" });
 
-        const { itam_name, qty, bill_number } = row;
+      const rollback = (status, msg) => {
+        db.run("ROLLBACK", () => res.status(status).json({ message: msg }));
+      };
 
-        // 2) Restore stock in itam table
+      db.get("SELECT itam_name, qty FROM outgoing WHERE record_id = ?", [record_id], (err, row) => {
+        if (err) return rollback(500, "Error querying outgoing record");
+        if (!row) return rollback(404, "Record not found");
+
+        const { itam_name, qty } = row;
+
+        // Restore stock
         db.run(
           "UPDATE itam SET quantity = quantity + ? WHERE itam_name = ?",
           [qty, itam_name],
-          function (err) {
-            if (err) {
-              console.error("Stock restore error:", err.message);
-              return res.status(500).json({ message: "Server error" });
-            }
+          (updateErr) => {
+            if (updateErr) return rollback(500, "Failed to restore inventory stock");
 
-            // 3) Delete the outgoing record
-            db.run(
-              "DELETE FROM outgoing WHERE record_id = ?",
-              [record_id],
-              function (err) {
-                if (err) {
-                  console.error("DELETE outgoing error:", err.message);
-                  return res.status(500).json({ message: "Server error" });
-                }
+            db.run("DELETE FROM outgoing WHERE record_id = ?", [record_id], (delErr) => {
+              if (delErr) return rollback(500, "Failed to delete record");
 
-                // 4) Delete the PDF bill file (optional)
-                const billFilename = `bill_${bill_number}_${record_id}.pdf`;
-                const billPath = path.join(billsDir, billFilename);
-                
-                if (fs.existsSync(billPath)) {
-                  fs.unlinkSync(billPath);
-                }
-
+              db.run("COMMIT", (commitErr) => {
+                if (commitErr) return rollback(500, "Transaction commit failed");
                 res.json({
-                  message: "Outgoing record deleted & stock restored",
+                  message: "Outgoing record deleted and stock restored successfully",
                   restored_qty: qty,
                 });
-              }
-            );
+              });
+            });
           }
         );
-      }
-    );
+      });
+    });
   });
 });
 
-// ✅ Function to generate PDF bill
-function generateBill(recordData, filepath) {
-  return new Promise((resolve, reject) => {
-    try {
-      const doc = new PDFDocument({ margin: 50 });
-      const stream = fs.createWriteStream(filepath);
-
-      doc.pipe(stream);
-
-      // Header
-      doc
-        .fontSize(24)
-        .font("Helvetica-Bold")
-        .text("SALES INVOICE", { align: "center" })
-        .moveDown(0.5);
-
-      // Company Info (customize this)
-      doc
-        .fontSize(10)
-        .font("Helvetica")
-        .text("Your Company Name", { align: "center" })
-        .text("Address Line 1, City, Country", { align: "center" })
-        .text("Phone: +123456789 | Email: info@company.com", { align: "center" })
-        .moveDown(1);
-
-      // Divider line
-      doc
-        .moveTo(50, doc.y)
-        .lineTo(550, doc.y)
-        .stroke()
-        .moveDown(0.5);
-
-      // Bill details in two columns
-      const leftColumn = 50;
-      const rightColumn = 320;
-      let currentY = doc.y;
-
-      doc.fontSize(10).font("Helvetica-Bold");
-      doc.text("Bill To:", leftColumn, currentY);
-      doc.font("Helvetica");
-      doc.text(recordData.buy_company, leftColumn, currentY + 15);
-
-      doc.font("Helvetica-Bold");
-      doc.text("Bill Number:", rightColumn, currentY);
-      doc.text("Date:", rightColumn, currentY + 15);
-      doc.text("Record ID:", rightColumn, currentY + 30);
-
-      doc.font("Helvetica");
-      doc.text(recordData.bill_number, rightColumn + 80, currentY);
-      doc.text(recordData.date, rightColumn + 80, currentY + 15);
-      doc.text(`#${recordData.record_id}`, rightColumn + 80, currentY + 30);
-
-      doc.moveDown(3);
-
-      // Divider line
-      doc
-        .moveTo(50, doc.y)
-        .lineTo(550, doc.y)
-        .stroke()
-        .moveDown(0.5);
-
-      // Table Header
-      currentY = doc.y;
-      doc.fontSize(10).font("Helvetica-Bold");
-      doc.text("Item", leftColumn, currentY);
-      doc.text("Qty", 250, currentY);
-      doc.text("Unit Price", 320, currentY);
-      doc.text("Amount", 450, currentY);
-
-      doc.moveDown(0.5);
-
-      // Divider line
-      doc
-        .moveTo(50, doc.y)
-        .lineTo(550, doc.y)
-        .stroke()
-        .moveDown(0.5);
-
-      // Table Content
-      currentY = doc.y;
-      const unitPrice = recordData.sell_price / recordData.qty;
-      
-      doc.font("Helvetica");
-      doc.text(recordData.itam_name, leftColumn, currentY, { width: 180 });
-      doc.text(recordData.qty.toString(), 250, currentY);
-      doc.text(unitPrice.toFixed(2), 320, currentY);
-      doc.text(recordData.sell_price.toFixed(2), 450, currentY);
-
-      doc.moveDown(2);
-
-      // Divider line
-      doc
-        .moveTo(50, doc.y)
-        .lineTo(550, doc.y)
-        .stroke()
-        .moveDown(0.5);
-
-      // Total section
-      currentY = doc.y;
-      doc.fontSize(12).font("Helvetica-Bold");
-      doc.text("Total Amount:", 350, currentY);
-      doc.text(`${recordData.sell_price.toFixed(2)}`, 450, currentY);
-
-      doc.moveDown(2);
-
-      // Footer
-      doc
-        .fontSize(9)
-        .font("Helvetica")
-        .text("Thank you for your business!", { align: "center" })
-        .moveDown(0.5)
-        .text("This is a computer-generated invoice.", { align: "center" });
-
-      doc.end();
-
-      stream.on("finish", () => resolve(filepath));
-      stream.on("error", reject);
-    } catch (error) {
-      reject(error);
-    }
-  });
-}
-// Add this after the existing routes in outgoing.js
-
-// ✅ POST generate PDF report for filtered outgoing records
+// POST generate PDF report for outgoing records - Stream directly
 router.post("/generate-pdf", (req, res) => {
   const { records } = req.body;
 
   if (!Array.isArray(records) || records.length === 0) {
-    return res.status(400).json({ message: "No records provided" });
+    return res.status(400).json({ message: "No records provided for PDF generation" });
   }
 
   try {
     const doc = new PDFDocument({ margin: 50, size: "A4", layout: "landscape" });
-    const filename = `outgoing_report_${Date.now()}.pdf`;
-    const filepath = path.join(billsDir, filename);
-    const stream = fs.createWriteStream(filepath);
 
-    doc.pipe(stream);
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="outgoing_report_${Date.now()}.pdf"`
+    );
+
+    doc.pipe(res);
 
     // Header
     doc
-      .fontSize(20)
+      .fontSize(22)
       .font("Helvetica-Bold")
+      .fillColor("#1565C0")
       .text("OUTGOING RECORDS REPORT", { align: "center" })
       .moveDown(0.3);
 
     doc
-      .fontSize(10)
+      .fontSize(12)
+      .font("Helvetica-Bold")
+      .fillColor("#1976D2")
+      .text("Library Service Board - Central Province", { align: "center" })
+      .moveDown(0.2);
+
+    doc
+      .fontSize(9)
       .font("Helvetica")
-      .text(`Generated on: ${new Date().toLocaleString()}`, { align: "center" })
-      .text(`Total Records: ${records.length}`, { align: "center" })
-      .moveDown(1);
+      .fillColor("#555555")
+      .text("Gatambe, Peradeniya | Contact: 0812384032 | Email: libraryserviceboardcpc@gmail.com", { align: "center" })
+      .text(`Generated on: ${new Date().toLocaleString()} | Total Records: ${records.length}`, { align: "center" })
+      .moveDown(0.8);
 
-    // Divider
-    doc.moveTo(50, doc.y).lineTo(790, doc.y).stroke().moveDown(0.5);
+    doc.strokeColor("#2196F3").lineWidth(1.5).moveTo(50, doc.y).lineTo(790, doc.y).stroke().moveDown(0.5);
 
-    // Calculate totals (coerce to numbers because the UI may send strings)
+    // Totals
     const totalQty = records.reduce((sum, r) => sum + (Number(r?.qty) || 0), 0);
-    const totalSellPrice = records.reduce(
-      (sum, r) => sum + (Number(r?.sell_price) || 0),
-      0
-    );
+    const totalSales = records.reduce((sum, r) => sum + (Number(r?.sell_price) || 0), 0);
     const totalProfit = records.reduce((sum, r) => sum + (Number(r?.profit) || 0), 0);
 
-    // Summary section
-    doc.fontSize(12).font("Helvetica-Bold").text("Summary:", 50, doc.y);
-    doc.fontSize(10).font("Helvetica");
-    doc.text(`Total Quantity: ${totalQty}`, 50, doc.y + 5);
-    doc.text(`Total Sales: ${totalSellPrice.toFixed(2)}`, 50, doc.y + 5);
-    doc.text(`Total Profit: ${totalProfit.toFixed(2)}`, 50, doc.y + 5);
-    doc.moveDown(1);
+    const summaryY = doc.y;
+    doc.fillColor("#E3F2FD").rect(50, summaryY, 740, 36).fill();
+    doc.fontSize(10).font("Helvetica-Bold").fillColor("#1565C0");
+    doc.text(`Total Quantity Sold: ${totalQty}`, 70, summaryY + 12);
+    doc.text(`Total Revenue: Rs. ${totalSales.toFixed(2)}`, 290, summaryY + 12);
+    doc.text(`Total Net Profit: Rs. ${totalProfit.toFixed(2)}`, 530, summaryY + 12);
+    doc.moveDown(2);
 
-    // Divider
-    doc.moveTo(50, doc.y).lineTo(790, doc.y).stroke().moveDown(0.5);
+    // Table Header
+    const tableTop = doc.y + 10;
+    doc.fillColor("#1976D2").rect(50, tableTop - 3, 740, 18).fill();
+    doc.fontSize(8).font("Helvetica-Bold").fillColor("#ffffff");
+    doc.text("ID", 55, tableTop);
+    doc.text("Date", 85, tableTop);
+    doc.text("Customer", 150, tableTop);
+    doc.text("Bill#", 260, tableTop);
+    doc.text("Item Name", 330, tableTop);
+    doc.text("Qty", 445, tableTop);
+    doc.text("Remaining", 485, tableTop);
+    doc.text("Total Sales", 545, tableTop);
+    doc.text("Cost Price", 630, tableTop);
+    doc.text("Profit", 715, tableTop);
 
-    // Table header
-    const tableTop = doc.y;
-    doc.fontSize(8).font("Helvetica-Bold");
-    doc.text("ID", 50, tableTop);
-    doc.text("Date", 80, tableTop);
-    doc.text("Customer", 140, tableTop, { width: 100 });
-    doc.text("Bill#", 250, tableTop);
-    doc.text("Item", 310, tableTop, { width: 100 });
-    doc.text("Qty", 420, tableTop);
-    doc.text("Balance", 460, tableTop);
-    doc.text("Sell Price", 520, tableTop);
-    doc.text("Buy Price", 590, tableTop);
-    doc.text("Profit", 660, tableTop);
+    let currentY = tableTop + 20;
+    doc.font("Helvetica").fontSize(7.5).fillColor("#333333");
 
-    doc.moveDown(0.5);
-    doc.moveTo(50, doc.y).lineTo(790, doc.y).stroke().moveDown(0.3);
-
-    // Table rows
-    doc.font("Helvetica").fontSize(7);
-    let currentY = doc.y;
-
-    records.forEach((record) => {
-      // Check if we need a new page
-      if (currentY > 520) {
+    records.forEach((record, index) => {
+      if (currentY > 510) {
         doc.addPage({ layout: "landscape" });
         currentY = 50;
       }
 
-      const recordId = record?.record_id ?? "";
-      const date = record?.date ?? "";
-      const buyCompany = String(record?.buy_company ?? "").substring(0, 15);
-      const billNumber = record?.bill_number ?? "";
-      const itemName = String(record?.itam_name ?? "").substring(0, 15);
-      const qty = Number(record?.qty) || 0;
-      const balance = Number(record?.balance) || 0;
+      if (index % 2 === 0) {
+        doc.fillColor("#F8F9FA").rect(50, currentY - 2, 740, 16).fill();
+      }
+
       const sellPrice = Number(record?.sell_price) || 0;
       const buyPrice = Number(record?.buy_price) || 0;
       const profit = Number(record?.profit) || 0;
 
-      doc.text(recordId, 50, currentY);
-      doc.text(date, 80, currentY);
-      doc.text(buyCompany, 140, currentY);
-      doc.text(billNumber, 250, currentY);
-      doc.text(itemName, 310, currentY);
-      doc.text(qty.toString(), 420, currentY);
-      doc.text(balance.toString(), 460, currentY);
-      doc.text(sellPrice.toFixed(2), 520, currentY);
-      doc.text(buyPrice.toFixed(2), 590, currentY);
-      doc.text(profit.toFixed(2), 660, currentY);
+      doc.fillColor("#333333");
+      doc.text(String(record?.record_id ?? ""), 55, currentY);
+      doc.text(String(record?.date ?? ""), 85, currentY);
+      doc.text(String(record?.buy_company ?? "").substring(0, 20), 150, currentY);
+      doc.text(String(record?.bill_number ?? ""), 260, currentY);
+      doc.text(String(record?.itam_name ?? "").substring(0, 20), 330, currentY);
+      doc.text(String(record?.qty ?? 0), 445, currentY);
+      doc.text(String(record?.balance ?? 0), 485, currentY);
+      doc.text(`Rs. ${sellPrice.toFixed(2)}`, 545, currentY);
+      doc.text(`Rs. ${buyPrice.toFixed(2)}`, 630, currentY);
+
+      if (profit >= 0) doc.fillColor("#2E7D32");
+      else doc.fillColor("#C62828");
+      doc.text(`Rs. ${profit.toFixed(2)}`, 715, currentY);
 
       currentY += 18;
     });
@@ -646,33 +477,16 @@ router.post("/generate-pdf", (req, res) => {
     // Footer
     doc
       .fontSize(8)
-      .font("Helvetica")
-      .text(
-        "This is a computer-generated report.",
-        50,
-        doc.page.height - 50,
-        { align: "center" }
-      );
+      .font("Helvetica-Oblique")
+      .fillColor("#777777")
+      .text("Library Service Board - Central Province | Computer-generated financial report", 50, doc.page.height - 40, { align: "center" });
 
     doc.end();
-
-    stream.on("finish", () => {
-      res.download(filepath, filename, (err) => {
-        if (err) {
-          console.error("Download error:", err);
-        }
-        // Delete file after download
-        fs.unlinkSync(filepath);
-      });
-    });
-
-    stream.on("error", (err) => {
-      console.error("Stream error:", err);
-      res.status(500).json({ message: "Failed to generate PDF" });
-    });
   } catch (error) {
-    console.error("PDF generation error:", error);
-    res.status(500).json({ message: "Failed to generate PDF" });
+    console.error("Outgoing report PDF error:", error);
+    if (!res.headersSent) {
+      res.status(500).json({ message: "Failed to generate PDF report" });
+    }
   }
 });
 

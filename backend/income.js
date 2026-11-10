@@ -1,37 +1,24 @@
-// backend/income.js
 const express = require("express");
 const router = express.Router();
+const PDFDocument = require("pdfkit");
 const db = require("./db");
+const { authenticateToken, requireAdmin, requireUserOrAdmin } = require("./middleware/auth");
 
-/**
- * INCOME ROUTES
- * Mount in server.js:
- *   const incomeRoutes = require("./income");
- *   app.use("/income", incomeRoutes);
- *
- * Endpoints:
- *   GET    /income/                    -> all income records
- *   GET    /income/pending             -> only pending records (admin)
- *   GET    /income/:record_id          -> single record
- *   POST   /income/                    -> add record (approval_status defaults to 'pending')
- *   PUT    /income/:record_id          -> edit record (admin)
- *   PATCH  /income/:record_id/approval -> approve/reject/pending (admin)
- *            - if approved: increase itam.quantity by income.qty (ONLY ONCE)
- *   DELETE /income/:record_id          -> delete record
- */
+// All income routes require authentication
+router.use(authenticateToken);
 
-// ✅ GET all income records
+// GET all income records
 router.get("/", (req, res) => {
   db.all("SELECT * FROM income ORDER BY record_id DESC", [], (err, rows) => {
     if (err) {
       console.error("GET /income error:", err.message);
-      return res.status(500).json({ message: "Server error" });
+      return res.status(500).json({ message: "Server error fetching income records" });
     }
     res.json(rows);
   });
 });
 
-// ✅ GET only pending income records (admin approval list)
+// GET only pending income records (for admin approval list)
 router.get("/pending", (req, res) => {
   db.all(
     "SELECT * FROM income WHERE approval_status = 'pending' ORDER BY record_id DESC",
@@ -39,28 +26,30 @@ router.get("/pending", (req, res) => {
     (err, rows) => {
       if (err) {
         console.error("GET /income/pending error:", err.message);
-        return res.status(500).json({ message: "Server error" });
+        return res.status(500).json({ message: "Server error fetching pending records" });
       }
       res.json(rows);
     }
   );
 });
 
-// ✅ GET one income record by id
+// GET one income record by id
 router.get("/:record_id", (req, res) => {
   const { record_id } = req.params;
 
   db.get("SELECT * FROM income WHERE record_id = ?", [record_id], (err, row) => {
     if (err) {
       console.error("GET /income/:id error:", err.message);
-      return res.status(500).json({ message: "Server error" });
+      return res.status(500).json({ message: "Server error fetching record" });
     }
-    if (!row) return res.status(404).json({ message: "Record not found" });
+    if (!row) {
+      return res.status(404).json({ message: "Income record not found" });
+    }
     res.json(row);
   });
 });
 
-// ✅ POST add income record (approval_status default = pending)
+// POST add income record (approval_status default = pending)
 router.post("/", (req, res) => {
   const { date, supply_company, bill_number, itam_name, qty, buy_price } = req.body;
 
@@ -78,25 +67,32 @@ router.post("/", (req, res) => {
   const qtyNum = Number(qty);
   const buyPriceNum = Number(buy_price);
 
-  if (Number.isNaN(qtyNum) || qtyNum <= 0) {
-    return res.status(400).json({ message: "qty must be a positive number" });
+  if (Number.isNaN(qtyNum) || qtyNum <= 0 || !Number.isInteger(qtyNum)) {
+    return res.status(400).json({ message: "Quantity must be a positive whole number" });
   }
   if (Number.isNaN(buyPriceNum) || buyPriceNum < 0) {
-    return res.status(400).json({ message: "buy_price must be a valid number" });
+    return res.status(400).json({ message: "Buy price must be a valid non-negative number" });
   }
 
   const sql = `
-    INSERT INTO income (date, supply_company, bill_number, itam_name, qty, buy_price)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO income (date, supply_company, bill_number, itam_name, qty, buy_price, approval_status)
+    VALUES (?, ?, ?, ?, ?, ?, 'pending')
   `;
 
   db.run(
     sql,
-    [date, supply_company, bill_number, itam_name, qtyNum, buyPriceNum],
+    [
+      String(date).trim(),
+      String(supply_company).trim(),
+      String(bill_number).trim(),
+      String(itam_name).trim(),
+      qtyNum,
+      buyPriceNum,
+    ],
     function (err) {
       if (err) {
         console.error("POST /income error:", err.message);
-        return res.status(500).json({ message: "Server error" });
+        return res.status(500).json({ message: "Server error creating income record" });
       }
       res.status(201).json({
         message: "Income record added (pending approval)",
@@ -106,8 +102,8 @@ router.post("/", (req, res) => {
   );
 });
 
-// ✅ PUT edit income record (admin edit)
-router.put("/:record_id", (req, res) => {
+// PUT edit income record (admin only)
+router.put("/:record_id", requireAdmin, (req, res) => {
   const { record_id } = req.params;
   const { date, supply_company, bill_number, itam_name, qty, buy_price } = req.body;
 
@@ -126,10 +122,10 @@ router.put("/:record_id", (req, res) => {
   const buyPriceNum = Number(buy_price);
 
   if (Number.isNaN(qtyNum) || qtyNum <= 0) {
-    return res.status(400).json({ message: "qty must be a positive number" });
+    return res.status(400).json({ message: "Quantity must be a positive number" });
   }
   if (Number.isNaN(buyPriceNum) || buyPriceNum < 0) {
-    return res.status(400).json({ message: "buy_price must be a valid number" });
+    return res.status(400).json({ message: "Buy price must be a valid number" });
   }
 
   const sql = `
@@ -140,226 +136,275 @@ router.put("/:record_id", (req, res) => {
 
   db.run(
     sql,
-    [date, supply_company, bill_number, itam_name, qtyNum, buyPriceNum, record_id],
+    [
+      String(date).trim(),
+      String(supply_company).trim(),
+      String(bill_number).trim(),
+      String(itam_name).trim(),
+      qtyNum,
+      buyPriceNum,
+      record_id,
+    ],
     function (err) {
       if (err) {
         console.error("PUT /income/:id error:", err.message);
-        return res.status(500).json({ message: "Server error" });
+        return res.status(500).json({ message: "Server error updating record" });
       }
-      if (this.changes === 0) return res.status(404).json({ message: "Record not found" });
-      res.json({ message: "Income record updated" });
+      if (this.changes === 0) {
+        return res.status(404).json({ message: "Income record not found" });
+      }
+      res.json({ message: "Income record updated successfully" });
     }
   );
 });
 
-// ✅ PATCH approve/reject/pending (admin)
-// ✅ If approved -> increase itam.quantity by income.qty (ONLY ONCE)
-router.patch("/:record_id/approval", (req, res) => {
+// PATCH approve/reject/pending (admin only) - ATOMIC TRANSACTION
+router.patch("/:record_id/approval", requireAdmin, (req, res) => {
   const { record_id } = req.params;
   const { approval_status } = req.body;
 
   if (!["pending", "approved", "rejected"].includes(approval_status)) {
-    return res.status(400).json({ message: "Invalid approval_status" });
+    return res.status(400).json({ message: "Invalid approval status" });
   }
 
-  // 1) Read income record first
-  db.get("SELECT * FROM income WHERE record_id = ?", [record_id], (err, income) => {
-    if (err) {
-      console.error("PATCH approval get income error:", err.message);
-      return res.status(500).json({ message: "Server error" });
-    }
-    if (!income) return res.status(404).json({ message: "Record not found" });
+  db.serialize(() => {
+    db.run("BEGIN IMMEDIATE TRANSACTION", (transErr) => {
+      if (transErr) {
+        console.error("Transaction start error:", transErr);
+        return res.status(500).json({ message: "Failed to start database transaction" });
+      }
 
-    // Prevent double stock update
-    if (income.approval_status === "approved") {
-      return res
-        .status(400)
-        .json({ message: "Already approved. Stock already updated." });
-    }
+      const rollback = (statusCode, msg) => {
+        db.run("ROLLBACK", () => {
+          res.status(statusCode).json({ message: msg });
+        });
+      };
 
-    // 2) Update approval status
-    db.run(
-      "UPDATE income SET approval_status = ? WHERE record_id = ?",
-      [approval_status, record_id],
-      function (err) {
-        if (err) {
-          console.error("PATCH /income/:id/approval update error:", err.message);
-          return res.status(500).json({ message: "Server error" });
+      // 1. Fetch current income record
+      db.get("SELECT * FROM income WHERE record_id = ?", [record_id], (err, income) => {
+        if (err) return rollback(500, "Server error checking income record");
+        if (!income) return rollback(404, "Income record not found");
+
+        if (income.approval_status === "approved" && approval_status === "approved") {
+          return rollback(400, "Record is already approved and stock has already been updated.");
         }
-        if (this.changes === 0) return res.status(404).json({ message: "Record not found" });
 
-        // 3) If approved -> add qty into itam table
+        // 2. If approving, check if item exists in itam table
         if (approval_status === "approved") {
+          db.get("SELECT * FROM itam WHERE itam_name = ?", [income.itam_name], (itemErr, itamRow) => {
+            if (itemErr) return rollback(500, "Database error checking item");
+            if (!itamRow) {
+              return rollback(404, `Item "${income.itam_name}" not found in inventory table`);
+            }
+
+            // Update item stock and latest unit buy price
+            db.run(
+              "UPDATE itam SET quantity = quantity + ?, buy_price = ? WHERE itam_name = ?",
+              [income.qty, income.buy_price, income.itam_name],
+              (updateItemErr) => {
+                if (updateItemErr) return rollback(500, "Failed to update item stock quantity");
+
+                // Update approval status
+                db.run(
+                  "UPDATE income SET approval_status = 'approved' WHERE record_id = ?",
+                  [record_id],
+                  (updateIncErr) => {
+                    if (updateIncErr) return rollback(500, "Failed to update approval status");
+
+                    db.run("COMMIT", (commitErr) => {
+                      if (commitErr) return rollback(500, "Commit failed");
+                      res.json({
+                        message: "Approved successfully and inventory quantity updated",
+                      });
+                    });
+                  }
+                );
+              }
+            );
+          });
+        } else {
+          // Rejecting or resetting to pending (no stock modification)
           db.run(
-            "UPDATE itam SET quantity = quantity + ? WHERE itam_name = ?",
-            [income.qty, income.itam_name],
-            function (err) {
-              if (err) {
-                console.error("Stock update error:", err.message);
-                return res.status(500).json({
-                  message: "Approved but failed to update itam quantity",
-                });
-              }
-
-              if (this.changes === 0) {
-                return res.status(404).json({
-                  message: "Approved but item not found in itam table",
-                });
-              }
-
-              return res.json({
-                message: "Approved successfully & itam quantity updated",
+            "UPDATE income SET approval_status = ? WHERE record_id = ?",
+            [approval_status, record_id],
+            (updateErr) => {
+              if (updateErr) return rollback(500, "Failed to update approval status");
+              db.run("COMMIT", (commitErr) => {
+                if (commitErr) return rollback(500, "Commit failed");
+                res.json({ message: `Status updated to ${approval_status}` });
               });
             }
           );
-        } else {
-          // rejected or pending: no stock update
-          return res.json({ message: "Approval status updated" });
         }
-      }
-    );
+      });
+    });
   });
 });
 
-// ✅ DELETE income record
+// DELETE income record - ATOMIC TRANSACTION with stock reversal if approved
 router.delete("/:record_id", (req, res) => {
   const { record_id } = req.params;
 
-  db.run("DELETE FROM income WHERE record_id = ?", [record_id], function (err) {
-    if (err) {
-      console.error("DELETE /income/:id error:", err.message);
-      return res.status(500).json({ message: "Server error" });
-    }
-    if (this.changes === 0) return res.status(404).json({ message: "Record not found" });
-    res.json({ message: "Income record deleted" });
+  db.serialize(() => {
+    db.run("BEGIN IMMEDIATE TRANSACTION", (transErr) => {
+      if (transErr) return res.status(500).json({ message: "Failed to start database transaction" });
+
+      const rollback = (status, msg) => {
+        db.run("ROLLBACK", () => res.status(status).json({ message: msg }));
+      };
+
+      db.get("SELECT * FROM income WHERE record_id = ?", [record_id], (err, income) => {
+        if (err) return rollback(500, "Server error checking income record");
+        if (!income) return rollback(404, "Income record not found");
+
+        if (income.approval_status === "approved") {
+          // Check stock before rolling back
+          db.get("SELECT quantity FROM itam WHERE itam_name = ?", [income.itam_name], (stockErr, itamRow) => {
+            if (stockErr) return rollback(500, "Server error checking inventory");
+            if (itamRow && itamRow.quantity < income.qty) {
+              return rollback(400, "Cannot delete approved record: remaining stock is less than incoming quantity.");
+            }
+
+            // Deduct stock
+            db.run(
+              "UPDATE itam SET quantity = quantity - ? WHERE itam_name = ?",
+              [income.qty, income.itam_name],
+              (deductErr) => {
+                if (deductErr) return rollback(500, "Failed to revert inventory stock");
+
+                db.run("DELETE FROM income WHERE record_id = ?", [record_id], (delErr) => {
+                  if (delErr) return rollback(500, "Failed to delete income record");
+                  db.run("COMMIT", (cErr) => {
+                    if (cErr) return rollback(500, "Transaction commit failed");
+                    res.json({ message: "Approved income record deleted and stock reversed" });
+                  });
+                });
+              }
+            );
+          });
+        } else {
+          // Unapproved, just delete
+          db.run("DELETE FROM income WHERE record_id = ?", [record_id], (delErr) => {
+            if (delErr) return rollback(500, "Failed to delete income record");
+            db.run("COMMIT", (cErr) => {
+              if (cErr) return rollback(500, "Transaction commit failed");
+              res.json({ message: "Income record deleted successfully" });
+            });
+          });
+        }
+      });
+    });
   });
 });
-// Add this at the top with other requires
-const PDFDocument = require("pdfkit");
-const fs = require("fs");
-const path = require("path");
 
-// Create reports directory if it doesn't exist
-const reportsDir = path.join(__dirname, "reports");
-if (!fs.existsSync(reportsDir)) {
-  fs.mkdirSync(reportsDir);
-}
-
-// ✅ POST generate PDF report for filtered income records
+// POST generate PDF report - Stream directly without file leaks
 router.post("/generate-pdf", (req, res) => {
   const { records } = req.body;
 
-  if (!records || records.length === 0) {
-    return res.status(400).json({ message: "No records provided" });
+  if (!Array.isArray(records) || records.length === 0) {
+    return res.status(400).json({ message: "No records provided for report generation" });
   }
 
   try {
     const doc = new PDFDocument({ margin: 50, size: "A4" });
-    const filename = `income_report_${Date.now()}.pdf`;
-    const filepath = path.join(reportsDir, filename);
-    const stream = fs.createWriteStream(filepath);
 
-    doc.pipe(stream);
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="income_report_${Date.now()}.pdf"`
+    );
+
+    doc.pipe(res);
 
     // Header
     doc
       .fontSize(20)
       .font("Helvetica-Bold")
+      .fillColor("#1565C0")
       .text("INCOME RECORDS REPORT", { align: "center" })
       .moveDown(0.3);
 
     doc
       .fontSize(10)
       .font("Helvetica")
+      .fillColor("#333333")
+      .text("Library Service Board - Central Province", { align: "center" })
       .text(`Generated on: ${new Date().toLocaleString()}`, { align: "center" })
       .text(`Total Records: ${records.length}`, { align: "center" })
       .moveDown(1);
 
     // Divider
-    doc.moveTo(50, doc.y).lineTo(550, doc.y).stroke().moveDown(0.5);
+    doc.strokeColor("#2196F3").lineWidth(1.5).moveTo(50, doc.y).lineTo(550, doc.y).stroke().moveDown(0.5);
 
-    // Calculate totals
-    const totalQty = records.reduce((sum, r) => sum + r.qty, 0);
-    const totalAmount = records.reduce((sum, r) => sum + r.buy_price * r.qty, 0);
+    // Totals
+    const totalQty = records.reduce((sum, r) => sum + (Number(r?.qty) || 0), 0);
+    const totalAmount = records.reduce((sum, r) => sum + ((Number(r?.buy_price) || 0) * (Number(r?.qty) || 0)), 0);
 
-    // Summary section
-    doc.fontSize(12).font("Helvetica-Bold").text("Summary:", 50, doc.y);
-    doc.fontSize(10).font("Helvetica");
-    doc.text(`Total Quantity: ${totalQty}`, 50, doc.y + 5);
-    doc.text(`Total Amount: ${totalAmount.toFixed(2)}`, 50, doc.y + 5);
-    doc.moveDown(1);
+    // Summary box
+    const summaryY = doc.y;
+    doc.fillColor("#E3F2FD").rect(50, summaryY, 500, 35).fill();
+    doc.fontSize(10).font("Helvetica-Bold").fillColor("#1565C0");
+    doc.text(`Total Quantity: ${totalQty}`, 65, summaryY + 12);
+    doc.text(`Total Cost: Rs. ${totalAmount.toFixed(2)}`, 300, summaryY + 12);
+    doc.moveDown(2);
 
-    // Divider
-    doc.moveTo(50, doc.y).lineTo(550, doc.y).stroke().moveDown(0.5);
+    // Table Header
+    const tableTop = doc.y + 10;
+    doc.fillColor("#1976D2").rect(50, tableTop - 4, 500, 18).fill();
+    doc.fontSize(8).font("Helvetica-Bold").fillColor("#ffffff");
+    doc.text("ID", 55, tableTop);
+    doc.text("Date", 85, tableTop);
+    doc.text("Supplier", 145, tableTop, { width: 110 });
+    doc.text("Bill#", 260, tableTop);
+    doc.text("Item Name", 320, tableTop, { width: 100 });
+    doc.text("Qty", 425, tableTop);
+    doc.text("Buy Price", 460, tableTop);
+    doc.text("Status", 515, tableTop);
 
-    // Table header
-    const tableTop = doc.y;
-    doc.fontSize(9).font("Helvetica-Bold");
-    doc.text("ID", 50, tableTop);
-    doc.text("Date", 80, tableTop);
-    doc.text("Company", 140, tableTop, { width: 100 });
-    doc.text("Bill#", 250, tableTop);
-    doc.text("Item", 300, tableTop, { width: 100 });
-    doc.text("Qty", 410, tableTop);
-    doc.text("Price", 450, tableTop);
-    doc.text("Status", 500, tableTop);
-
-    doc.moveDown(0.5);
-    doc.moveTo(50, doc.y).lineTo(550, doc.y).stroke().moveDown(0.3);
-
-    // Table rows
-    doc.font("Helvetica").fontSize(8);
-    let currentY = doc.y;
+    let currentY = tableTop + 18;
+    doc.font("Helvetica").fontSize(8).fillColor("#333333");
 
     records.forEach((record, index) => {
-      // Check if we need a new page
-      if (currentY > 700) {
+      if (currentY > 720) {
         doc.addPage();
         currentY = 50;
       }
 
-      doc.text(record.record_id, 50, currentY);
-      doc.text(record.date, 80, currentY);
-      doc.text(record.supply_company.substring(0, 15), 140, currentY);
-      doc.text(record.bill_number, 250, currentY);
-      doc.text(record.itam_name.substring(0, 15), 300, currentY);
-      doc.text(record.qty.toString(), 410, currentY);
-      doc.text(record.buy_price.toFixed(2), 450, currentY);
-      doc.text(record.approval_status, 500, currentY);
+      if (index % 2 === 0) {
+        doc.fillColor("#F8F9FA").rect(50, currentY - 2, 500, 16).fill();
+      }
 
-      currentY += 20;
+      doc.fillColor("#333333");
+      doc.text(String(record?.record_id ?? ""), 55, currentY);
+      doc.text(String(record?.date ?? ""), 85, currentY);
+      doc.text(String(record?.supply_company ?? "").substring(0, 20), 145, currentY);
+      doc.text(String(record?.bill_number ?? ""), 260, currentY);
+      doc.text(String(record?.itam_name ?? "").substring(0, 18), 320, currentY);
+      doc.text(String(record?.qty ?? 0), 425, currentY);
+      doc.text(`Rs. ${(Number(record?.buy_price) || 0).toFixed(2)}`, 460, currentY);
+
+      const status = String(record?.approval_status ?? "pending");
+      if (status === "approved") doc.fillColor("#2E7D32");
+      else if (status === "rejected") doc.fillColor("#C62828");
+      else doc.fillColor("#E65100");
+      doc.text(status, 515, currentY);
+
+      currentY += 18;
     });
 
     // Footer
     doc
       .fontSize(8)
-      .font("Helvetica")
-      .text(
-        "This is a computer-generated report.",
-        50,
-        doc.page.height - 50,
-        { align: "center" }
-      );
+      .font("Helvetica-Oblique")
+      .fillColor("#777777")
+      .text("Library Service Board - Central Province | Computer-generated report", 50, doc.page.height - 40, { align: "center" });
 
     doc.end();
-
-    stream.on("finish", () => {
-      res.download(filepath, filename, (err) => {
-        if (err) {
-          console.error("Download error:", err);
-        }
-        // Delete file after download
-        fs.unlinkSync(filepath);
-      });
-    });
-
-    stream.on("error", (err) => {
-      console.error("Stream error:", err);
-      res.status(500).json({ message: "Failed to generate PDF" });
-    });
   } catch (error) {
     console.error("PDF generation error:", error);
-    res.status(500).json({ message: "Failed to generate PDF" });
+    if (!res.headersSent) {
+      res.status(500).json({ message: "Failed to generate PDF report" });
+    }
   }
 });
 

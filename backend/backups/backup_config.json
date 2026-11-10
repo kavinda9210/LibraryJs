@@ -1,0 +1,8 @@
+{
+  "auto_backup_enabled": true,
+  "interval_hours": 12,
+  "max_retention_copies": 25,
+  "last_backup_time": "2026-11-10T03:29:18.321Z",
+  "last_backup_status": "success",
+  "last_backup_file": "backup_task_scheduler_2026-11-10_03-29-18.sqlite"
+}
